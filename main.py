@@ -11,6 +11,8 @@ import argparse
 import sys
 import os
 import requests
+import subprocess
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -121,6 +123,79 @@ def get_video_info(video_path):
     print_info(f"Extension: {path.suffix}")
 
 
+def extract_audio(video_path, output_audio_path):
+    """Extract audio from video file using FFmpeg"""
+    try:
+        cmd = [
+            'ffmpeg',
+            '-i', video_path,
+            '-vn',  # No video
+            '-acodec', 'pcm_s16le',  # PCM 16-bit little-endian
+            '-ar', '16000',  # Sample rate 16kHz (required by m4t)
+            '-ac', '1',  # Mono
+            '-y',  # Overwrite output file
+            output_audio_path
+        ]
+
+        print_info(f"Extracting audio from video...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print_error(f"FFmpeg error: {result.stderr}")
+            return False
+
+        print_success(f"Audio extracted to: {output_audio_path}")
+        return True
+    except FileNotFoundError:
+        print_error("FFmpeg not found. Please install FFmpeg.")
+        return False
+    except Exception as e:
+        print_error(f"Error extracting audio: {e}")
+        return False
+
+
+def speech_to_text_translation(audio_path, source_lang, target_lang, api_url):
+    """Call m4t API for speech-to-text translation"""
+    try:
+        print_info(f"Translating speech from {source_lang} to {target_lang}...")
+
+        # Read audio file
+        with open(audio_path, 'rb') as f:
+            audio_data = f.read()
+
+        # Prepare multipart form data
+        files = {
+            'audio': ('audio.wav', audio_data, 'audio/wav')
+        }
+        data = {
+            'source_lang': source_lang,
+            'target_lang': target_lang
+        }
+
+        # Call m4t S2TT API
+        response = requests.post(
+            f"{api_url}/v1/speech-to-text-translation",
+            files=files,
+            data=data,
+            timeout=300  # 5 minutes timeout for long audio
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return result
+        else:
+            print_error(f"API error: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+
+    except requests.exceptions.Timeout:
+        print_error("Request timeout. Audio file might be too long.")
+        return None
+    except Exception as e:
+        print_error(f"Error calling m4t API: {e}")
+        return None
+
+
 def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url):
     """Process video file for translation"""
 
@@ -162,24 +237,87 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
         print_info("  --audio       Generate audio dubbing")
         return 1
 
-    print_header("Processing Pipeline")
+    # Process subtitle generation
     if generate_subtitle:
-        print_info("Step 1: Extract audio from video (FFmpeg)")
-        print_info("Step 2: Translate speech to text (m4t S2TT)")
-        print_info("Step 3: Generate subtitle file (.srt)")
+        print_header("Subtitle Generation")
+
+        # Use subtitle_source_lang if specified, otherwise use source_lang
+        print_info(f"Audio language: {source_lang}")
+        print_info(f"Subtitle language: {target_lang}")
+
+        # Create temporary audio file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
+            tmp_audio_path = tmp_audio.name
+
+        try:
+            # Step 1: Extract audio from video
+            print_info("Step 1/2: Extracting audio from video...")
+            if not extract_audio(input_file, tmp_audio_path):
+                return 1
+
+            # Step 2: Translate speech to text
+            source_text = None
+
+            # If subtitle_source_lang flag is set, first transcribe to source language
+            if subtitle_source_lang:
+                print_info("Step 2a/3: Transcribing speech to source language text...")
+                print_info(f"Transcribing {source_lang} audio to {source_lang} text...")
+
+                # Call ASR endpoint to get source language transcription
+                try:
+                    with open(tmp_audio_path, 'rb') as f:
+                        audio_data = f.read()
+
+                    files = {'audio': ('audio.wav', audio_data, 'audio/wav')}
+                    data = {'language': source_lang}
+
+                    response = requests.post(
+                        f"{api_url}/v1/transcribe",
+                        files=files,
+                        data=data,
+                        timeout=300
+                    )
+
+                    if response.status_code == 200:
+                        asr_result = response.json()
+                        source_text = asr_result.get('output_text', '')
+                        print_success(f"Transcription completed!")
+                    else:
+                        print_error(f"Transcription failed: {response.status_code}")
+                        print_error(f"Response: {response.text}")
+
+                except Exception as e:
+                    print_error(f"Error during transcription: {e}")
+
+                print_info("Step 2b/3: Translating speech to target language text...")
+            else:
+                print_info("Step 2/2: Translating speech to text...")
+
+            result = speech_to_text_translation(tmp_audio_path, source_lang, target_lang, api_url)
+
+            if result is None:
+                return 1
+
+            # Print translation results
+            print_header("Translation Result")
+            print_success("Speech-to-text translation completed!")
+
+            # Display source language text if available
+            if source_text:
+                print_info(f"\nOriginal text ({source_lang}):")
+                print(f"{Colors.BLUE}{source_text}{Colors.END}\n")
+
+            print_info(f"\nTranslated text ({target_lang}):")
+            print(f"\n{Colors.CYAN}{result.get('output_text', 'N/A')}{Colors.END}\n")
+
+        finally:
+            # Clean up temporary audio file
+            if os.path.exists(tmp_audio_path):
+                os.unlink(tmp_audio_path)
+                print_info(f"Cleaned up temporary audio file")
 
     if generate_audio:
-        print_info("Step 1: Extract audio from video (FFmpeg)")
-        print_info("Step 2: Translate speech to text (m4t S2TT)")
-        print_info("Step 3: Generate translated speech (m4t TTS)")
-        print_info("Step 4: Replace audio track in video")
-
-    print_error("\n⚠ Translation pipeline not yet implemented")
-    print_info("This CLI interface is ready - implementation coming in v0.1.0")
-    print_info("\nFor now, you can test the m4t API directly:")
-    print_info(f"  curl -X POST '{api_url}/v1/text-to-text-translation' \\")
-    print_info(f"    -H 'Content-Type: application/json' \\")
-    print_info(f"    -d '{{\"text\": \"Hello\", \"source_lang\": \"{source_lang}\", \"target_lang\": \"{target_lang}\"}}'")
+        print_warning("Audio dubbing not yet implemented")
 
     return 0
 
@@ -255,7 +393,7 @@ See http://localhost:8000/languages for full list of supported languages.
     # Optional subtitle source language
     parser.add_argument(
         '--subtitle-source-lang',
-        metavar='LANG',
+        action='store_true',
         help='Source language for subtitle generation (default: same as --lang source language)'
     )
 
