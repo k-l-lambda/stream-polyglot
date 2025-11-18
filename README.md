@@ -52,12 +52,13 @@ Stream-Polyglot is a cross-platform video and audio translation application that
 - **m4t API**: SeamlessM4T translation backend (required)
 
 ### Python Libraries
-- **ffmpeg-python**: FFmpeg wrapper for video/audio operations
+- **python-dotenv**: Environment variable management
 - **requests**: HTTP client for m4t API communication
-- **pysrt**: SRT subtitle file parsing and generation
-- **webvtt-py**: WebVTT subtitle format support
-- **soundfile**: Audio file I/O
-- **numpy**: Numerical operations for audio processing
+- **ffmpeg-python**: FFmpeg wrapper for video/audio operations (planned)
+- **pysrt**: SRT subtitle file parsing and generation (planned)
+- **webvtt-py**: WebVTT subtitle format support (planned)
+- **soundfile**: Audio file I/O (planned)
+- **numpy**: Numerical operations for audio processing (planned)
 
 ### Optional
 - **MoviePy**: Alternative video editing library (user-friendly)
@@ -79,11 +80,24 @@ Stream-Polyglot is a cross-platform video and audio translation application that
    # Download from https://ffmpeg.org/download.html
    ```
 
-2. **m4t API Server**: Ensure the SeamlessM4T API server is running
+2. **m4t API Server**: Start the SeamlessM4T API server by Docker (6GB GPU memory required at least)
+
    ```bash
-   # Default endpoint: http://localhost:8000
-   # See: https://github.com/yourusername/m4t
+   # Pull the m4t Docker image
+   docker pull kllambda/m4t:v1.0.0
+
+   # Run the m4t server (requires GPU)
+   docker run -d \
+     --name m4t-server \
+     --gpus all \
+     -p 8000:8000 \
+     kllambda/m4t:v1.0.0
+
+   # Check server status
+   curl http://localhost:8000/health
    ```
+
+   The server will be available at `http://localhost:8000` by default.
 
 ### Setup
 
@@ -105,73 +119,77 @@ Stream-Polyglot is a cross-platform video and audio translation application that
    ```
 
 4. Configure m4t API endpoint (optional):
+
+   **Option 1: Using .env file (recommended)**
+   ```bash
+   # Copy the example file
+   cp .env.example .env
+
+   # Edit .env and set M4T_API_URL
+   # M4T_API_URL=http://localhost:8000
+   ```
+
+   **Option 2: Using environment variable**
    ```bash
    export M4T_API_URL=http://localhost:8000
    ```
 
+   **Option 3: Using command-line argument**
+   ```bash
+   python main.py test --api-url http://localhost:8000
+   ```
+
 ## Usage
 
-### Basic Translation
+### Generate Subtitles
 
-Translate Japanese video to Chinese subtitles:
+Generate Chinese subtitles for English video:
 
 ```bash
-python stream-polyglot.py translate \
-  --input video.mp4 \
-  --source-lang jpn \
-  --target-lang cmn \
-  --output video.cmn.srt
+python -m main video.mp4 --lang eng:cmn --subtitle
 ```
 
-### Audio Dubbing
+### Generate Audio Dubbing
 
 Replace audio with translated speech:
 
 ```bash
-python stream-polyglot.py dub \
-  --input video.mp4 \
-  --source-lang jpn \
-  --target-lang eng \
-  --output video_dubbed.mp4
+python -m main video.mp4 --lang eng:jpn --audio
 ```
 
-### Batch Processing
+### Generate Both Subtitles and Audio
 
-Process multiple files:
+Create both subtitle file and dubbed audio:
 
 ```bash
-python stream-polyglot.py batch \
-  --input-dir ./videos \
-  --source-lang jpn \
-  --target-lang cmn \
-  --output-dir ./translated
+python -m main video.mp4 --lang eng:cmn --subtitle --audio
 ```
 
-### Python API
+### Specify Custom Output Directory
 
-```python
-from stream_polyglot import VideoTranslator
+```bash
+python -m main video.mp4 --lang jpn:eng --subtitle --output ./translated/
+```
 
-# Initialize translator
-translator = VideoTranslator(
-    m4t_api_url="http://localhost:8000"
-)
+### Use Custom Subtitle Source Language
 
-# Translate video to subtitles
-translator.translate_video(
-    input_path="movie.mp4",
-    source_lang="jpn",
-    target_lang="cmn",
-    output_subtitle="movie.cmn.srt"
-)
+When video audio language differs from the main translation pair:
 
-# Generate dubbed audio
-translator.dub_video(
-    input_path="movie.mp4",
-    source_lang="jpn",
-    target_lang="eng",
-    output_path="movie_dubbed.mp4"
-)
+```bash
+# Translate Japanese audio to Chinese subtitles
+python -m main video.mp4 --lang eng:cmn --subtitle --subtitle-source-lang jpn
+```
+
+### Use Custom API Server
+
+```bash
+python -m main video.mp4 --lang eng:cmn --subtitle --api-url http://192.168.1.100:8000
+```
+
+### View All Options
+
+```bash
+python -m main --help
 ```
 
 ## Supported Languages
@@ -342,11 +360,6 @@ MIT License - see [LICENSE](LICENSE) file for details
 - **SeamlessM4T** (Meta AI): Multilingual translation model
 - **FFmpeg**: Video/audio processing framework
 - Community contributors and testers
-
-## Related Projects
-
-- [m4t API Server](https://github.com/yourusername/m4t) - SeamlessM4T FastAPI backend
-- [SeamlessM4T](https://github.com/facebookresearch/seamless_communication) - Original Meta AI model
 
 ## Contact
 
