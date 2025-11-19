@@ -196,10 +196,12 @@ def speech_to_text_translation(audio_path, source_lang, target_lang, api_url):
         return None
 
 
-def speech_to_speech_translation(audio_path, source_lang, target_lang, api_url):
+def speech_to_speech_translation(audio_path, source_lang, target_lang, api_url, speaker_id=0):
     """Call m4t API for speech-to-speech translation"""
     try:
         print_info(f"Translating speech from {source_lang} to {target_lang}...")
+        if speaker_id != 0:
+            print_info(f"Using speaker voice ID: {speaker_id}")
 
         # Read audio file
         with open(audio_path, 'rb') as f:
@@ -212,7 +214,8 @@ def speech_to_speech_translation(audio_path, source_lang, target_lang, api_url):
         data = {
             'source_lang': source_lang,
             'target_lang': target_lang,
-            'response_format': 'json'  # Get JSON with base64 audio
+            'response_format': 'json',  # Get JSON with base64 audio
+            'speaker_id': speaker_id
         }
 
         # Call m4t S2ST API
@@ -282,7 +285,7 @@ def save_base64_audio_to_file(audio_base64, output_path):
         return False
 
 
-def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url):
+def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url, speaker_id=0):
     """Process video file for translation"""
 
     print_header("Stream-Polyglot Video Translation")
@@ -421,7 +424,7 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
 
             # Step 2: Try Speech-to-speech translation first (more efficient)
             print_info("Step 2/2: Translating speech to speech...")
-            s2st_result = speech_to_speech_translation(tmp_audio_path, source_lang, target_lang, api_url)
+            s2st_result = speech_to_speech_translation(tmp_audio_path, source_lang, target_lang, api_url, speaker_id)
 
             if s2st_result and s2st_result.get('output_audio_base64'):
                 # S2ST succeeded
@@ -597,6 +600,15 @@ See http://localhost:8000/languages for full list of supported languages.
         help='Source language for subtitle generation (default: same as --lang source language)'
     )
 
+    # Optional speaker ID for audio generation
+    parser.add_argument(
+        '--speaker-id',
+        type=int,
+        default=0,
+        metavar='ID',
+        help='Speaker voice ID for audio generation (0-199, default: 0)'
+    )
+
     # Optional output directory
     parser.add_argument(
         '--output',
@@ -629,7 +641,8 @@ See http://localhost:8000/languages for full list of supported languages.
             args.subtitle,
             args.subtitle_source_lang,
             args.output,
-            args.api_url
+            args.api_url,
+            args.speaker_id
         )
     except KeyboardInterrupt:
         print_error("\n\nInterrupted by user")
