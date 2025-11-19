@@ -15,6 +15,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
+from tqdm import tqdm
+
+# Import audio timeline segmentation
+from audio_timeline import segment_with_timeline
+
+# Import SRT utilities
+from srt_utils import generate_srt_content, save_srt_file
 
 
 class Colors:
@@ -154,10 +161,11 @@ def extract_audio(video_path, output_audio_path):
         return False
 
 
-def speech_to_text_translation(audio_path, source_lang, target_lang, api_url):
+def speech_to_text_translation(audio_path, source_lang, target_lang, api_url, verbose=True):
     """Call m4t API for speech-to-text translation"""
     try:
-        print_info(f"Translating speech from {source_lang} to {target_lang}...")
+        if verbose:
+            print_info(f"Translating speech from {source_lang} to {target_lang}...")
 
         # Read audio file
         with open(audio_path, 'rb') as f:
@@ -326,84 +334,141 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
         print_info("  --audio       Generate audio dubbing")
         return 1
 
-    # Process subtitle generation
+    # Process subtitle generation with timeline
     if generate_subtitle:
-        print_header("Subtitle Generation")
+        print_header("Subtitle Generation with Timeline")
 
-        # Use subtitle_source_lang if specified, otherwise use source_lang
         print_info(f"Audio language: {source_lang}")
         print_info(f"Subtitle language: {target_lang}")
 
-        # Create temporary audio file
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
-            tmp_audio_path = tmp_audio.name
+        # Create temporary directories
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+            fragments_dir = os.path.join(temp_dir, 'fragments')
 
-        try:
-            # Step 1: Extract audio from video
-            print_info("Step 1/2: Extracting audio from video...")
-            if not extract_audio(input_file, tmp_audio_path):
+            try:
+                # Step 1: Extract audio from video
+                print_info("Step 1/4: Extracting audio from video...")
+                if not extract_audio(input_file, tmp_audio_path):
+                    return 1
+
+                # Step 2: Segment audio with timeline
+                print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
+                timeline, metadata = segment_with_timeline(
+                    audio_path=tmp_audio_path,
+                    output_dir=fragments_dir,
+                    chunk_duration=30.0,
+                    m4t_api_url=api_url,
+                    save_timeline=False
+                )
+
+                fragment_count = len(timeline)
+                total_duration = metadata.get('total_duration', 0)
+                print_success(f"Segmented into {fragment_count} speech fragments")
+                print_info(f"Total audio duration: {total_duration:.2f}s")
+
+                # Step 3: Translate each fragment
+                print_info(f"Step 3/4: Translating {fragment_count} fragments...")
+                subtitles = []
+                source_subtitles = []
+
+                # Use tqdm progress bar
+                with tqdm(total=fragment_count, desc="Translating", unit="fragment",
+                         bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                         ncols=80) as pbar:
+                    for i, fragment in enumerate(timeline):
+                        fragment_path = os.path.join(fragments_dir, fragment['file'])
+
+                        # If subtitle_source_lang is set, transcribe source language first
+                        if subtitle_source_lang:
+                            try:
+                                with open(fragment_path, 'rb') as f:
+                                    audio_data = f.read()
+
+                                files = {'audio': ('audio.wav', audio_data, 'audio/wav')}
+                                data = {'language': source_lang}
+
+                                response = requests.post(
+                                    f"{api_url}/v1/transcribe",
+                                    files=files,
+                                    data=data,
+                                    timeout=60
+                                )
+
+                                if response.status_code == 200:
+                                    asr_result = response.json()
+                                    source_text = asr_result.get('output_text', '').strip()
+                                    if source_text:
+                                        source_subtitles.append({
+                                            'start': fragment['start'],
+                                            'end': fragment['end'],
+                                            'text': source_text
+                                        })
+                            except Exception as e:
+                                tqdm.write(f"{Colors.RED}✗ Fragment {i}: Source transcription failed: {e}{Colors.END}")
+
+                        # Translate fragment to target language
+                        result = speech_to_text_translation(fragment_path, source_lang, target_lang, api_url, verbose=False)
+
+                        if result and result.get('output_text'):
+                            translated_text = result['output_text'].strip()
+                            if translated_text:
+                                subtitles.append({
+                                    'start': fragment['start'],
+                                    'end': fragment['end'],
+                                    'text': translated_text
+                                })
+                        else:
+                            tqdm.write(f"{Colors.YELLOW}⚠ Fragment {i}: Translation failed, skipping{Colors.END}")
+
+                        # Update progress bar
+                        pbar.update(1)
+
+                # Step 4: Generate and save SRT files
+                print_info(f"Step 4/4: Generating SRT subtitle files...")
+
+                if not subtitles:
+                    print_error("No subtitles generated")
+                    return 1
+
+                # Ensure output directory exists
+                os.makedirs(output_dir, exist_ok=True)
+
+                # Generate output filename
+                input_path = Path(input_file)
+                output_srt_filename = f"{input_path.stem}.{target_lang}.srt"
+                output_srt_path = Path(output_dir) / output_srt_filename
+
+                # Generate and save target language SRT
+                srt_content = generate_srt_content(subtitles, merge_short=True)
+                if save_srt_file(srt_content, str(output_srt_path)):
+                    print_success(f"Target language subtitle saved: {output_srt_path}")
+                else:
+                    print_error("Failed to save target language subtitle")
+                    return 1
+
+                # Generate source language SRT if requested
+                if subtitle_source_lang and source_subtitles:
+                    source_srt_filename = f"{input_path.stem}.{source_lang}.srt"
+                    source_srt_path = Path(output_dir) / source_srt_filename
+
+                    source_srt_content = generate_srt_content(source_subtitles, merge_short=True)
+                    if save_srt_file(source_srt_content, str(source_srt_path)):
+                        print_success(f"Source language subtitle saved: {source_srt_path}")
+
+                # Print summary
+                print_header("Subtitle Generation Result")
+                print_success(f"Generated {len(subtitles)} subtitle entries")
+                print_info(f"Target language SRT: {output_srt_path}")
+                if subtitle_source_lang and source_subtitles:
+                    print_info(f"Source language SRT: {source_srt_path}")
+                    print_info(f"Source entries: {len(source_subtitles)}")
+
+            except Exception as e:
+                print_error(f"Error during subtitle generation: {e}")
+                import traceback
+                traceback.print_exc()
                 return 1
-
-            # Step 2: Translate speech to text
-            source_text = None
-
-            # If subtitle_source_lang flag is set, first transcribe to source language
-            if subtitle_source_lang:
-                print_info("Step 2a/3: Transcribing speech to source language text...")
-                print_info(f"Transcribing {source_lang} audio to {source_lang} text...")
-
-                # Call ASR endpoint to get source language transcription
-                try:
-                    with open(tmp_audio_path, 'rb') as f:
-                        audio_data = f.read()
-
-                    files = {'audio': ('audio.wav', audio_data, 'audio/wav')}
-                    data = {'language': source_lang}
-
-                    response = requests.post(
-                        f"{api_url}/v1/transcribe",
-                        files=files,
-                        data=data,
-                        timeout=300
-                    )
-
-                    if response.status_code == 200:
-                        asr_result = response.json()
-                        source_text = asr_result.get('output_text', '')
-                        print_success(f"Transcription completed!")
-                    else:
-                        print_error(f"Transcription failed: {response.status_code}")
-                        print_error(f"Response: {response.text}")
-
-                except Exception as e:
-                    print_error(f"Error during transcription: {e}")
-
-                print_info("Step 2b/3: Translating speech to target language text...")
-            else:
-                print_info("Step 2/2: Translating speech to text...")
-
-            result = speech_to_text_translation(tmp_audio_path, source_lang, target_lang, api_url)
-
-            if result is None:
-                return 1
-
-            # Print translation results
-            print_header("Translation Result")
-            print_success("Speech-to-text translation completed!")
-
-            # Display source language text if available
-            if source_text:
-                print_info(f"\nOriginal text ({source_lang}):")
-                print(f"{Colors.BLUE}{source_text}{Colors.END}\n")
-
-            print_info(f"\nTranslated text ({target_lang}):")
-            print(f"\n{Colors.CYAN}{result.get('output_text', 'N/A')}{Colors.END}\n")
-
-        finally:
-            # Clean up temporary audio file
-            if os.path.exists(tmp_audio_path):
-                os.unlink(tmp_audio_path)
-                print_info(f"Cleaned up temporary audio file")
 
     # Process audio dubbing
     if generate_audio:

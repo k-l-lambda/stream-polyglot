@@ -256,10 +256,12 @@ class AudioTimeline:
 
                 incomplete_buffer = None
 
-            # Check if last segment is incomplete
+            # Check if last segment is incomplete (but NOT if we're at the end of the audio)
             if speech_segments:
                 last_segment = speech_segments[-1]
-                if self.is_incomplete_segment(last_segment, chunk_end):
+                # Only mark as incomplete if NOT at the end of the audio
+                is_at_audio_end = chunk_end >= total_duration - 0.05
+                if self.is_incomplete_segment(last_segment, chunk_end) and not is_at_audio_end:
                     logger.info(f"  Last segment incomplete at {last_segment['end']:.1f}s, buffering")
                     incomplete_buffer = last_segment
                     speech_segments = speech_segments[:-1]
