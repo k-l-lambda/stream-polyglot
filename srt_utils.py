@@ -64,35 +64,44 @@ def clean_subtitle_text(text: str, max_length: int = 80) -> str:
     # Strip whitespace
     text = text.strip()
 
-    # Replace multiple spaces with single space
+    # Replace multiple spaces with single space, but preserve newlines
     import re
-    text = re.sub(r'\s+', ' ', text)
+    # Split by newlines first to preserve line structure (for bilingual subtitles)
+    lines = text.split('\n')
+    cleaned_lines = []
 
-    # Optionally break long lines
-    if len(text) > max_length:
-        # Try to break at natural points
-        words = text.split()
-        lines = []
-        current_line = []
-        current_length = 0
+    for line in lines:
+        # For each line, replace multiple spaces with single space
+        line = line.strip()
+        line = re.sub(r' +', ' ', line)
 
-        for word in words:
-            word_len = len(word) + (1 if current_line else 0)
-            if current_length + word_len <= max_length:
-                current_line.append(word)
-                current_length += word_len
-            else:
-                if current_line:
-                    lines.append(' '.join(current_line))
-                current_line = [word]
-                current_length = len(word)
+        # Optionally break long lines
+        if len(line) > max_length:
+            # Try to break at natural points
+            words = line.split()
+            sub_lines = []
+            current_line = []
+            current_length = 0
 
-        if current_line:
-            lines.append(' '.join(current_line))
+            for word in words:
+                word_len = len(word) + (1 if current_line else 0)
+                if current_length + word_len <= max_length:
+                    current_line.append(word)
+                    current_length += word_len
+                else:
+                    if current_line:
+                        sub_lines.append(' '.join(current_line))
+                    current_line = [word]
+                    current_length = len(word)
 
-        text = '\n'.join(lines)
+            if current_line:
+                sub_lines.append(' '.join(current_line))
 
-    return text
+            cleaned_lines.extend(sub_lines)
+        else:
+            cleaned_lines.append(line)
+
+    return '\n'.join(cleaned_lines)
 
 
 def merge_short_subtitles(

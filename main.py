@@ -370,7 +370,6 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                 # Step 3: Translate each fragment
                 print_info(f"Step 3/4: Translating {fragment_count} fragments...")
                 subtitles = []
-                source_subtitles = []
 
                 # Use tqdm progress bar
                 with tqdm(total=fragment_count, desc="Translating", unit="fragment",
@@ -379,6 +378,7 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     for i, fragment in enumerate(timeline):
                         fragment_path = os.path.join(fragments_dir, fragment['file'])
 
+                        source_text = None
                         # If subtitle_source_lang is set, transcribe source language first
                         if subtitle_source_lang:
                             try:
@@ -398,12 +398,6 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                                 if response.status_code == 200:
                                     asr_result = response.json()
                                     source_text = asr_result.get('output_text', '').strip()
-                                    if source_text:
-                                        source_subtitles.append({
-                                            'start': fragment['start'],
-                                            'end': fragment['end'],
-                                            'text': source_text
-                                        })
                             except Exception as e:
                                 tqdm.write(f"{Colors.RED}✗ Fragment {i}: Source transcription failed: {e}{Colors.END}")
 
@@ -413,10 +407,17 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                         if result and result.get('output_text'):
                             translated_text = result['output_text'].strip()
                             if translated_text:
+                                # If bilingual mode, combine source and target text
+                                if subtitle_source_lang and source_text:
+                                    # Bilingual format: source language on first line, target language on second line
+                                    combined_text = f"{source_text}\n{translated_text}"
+                                else:
+                                    combined_text = translated_text
+
                                 subtitles.append({
                                     'start': fragment['start'],
                                     'end': fragment['end'],
-                                    'text': translated_text
+                                    'text': combined_text
                                 })
                         else:
                             tqdm.write(f"{Colors.YELLOW}⚠ Fragment {i}: Translation failed, skipping{Colors.END}")
@@ -436,33 +437,31 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
 
                 # Generate output filename
                 input_path = Path(input_file)
-                output_srt_filename = f"{input_path.stem}.{target_lang}.srt"
+
+                # If bilingual mode, use format like "video.eng-cmn.srt"
+                if subtitle_source_lang:
+                    output_srt_filename = f"{input_path.stem}.{source_lang}-{target_lang}.srt"
+                    subtitle_type = "Bilingual"
+                else:
+                    output_srt_filename = f"{input_path.stem}.{target_lang}.srt"
+                    subtitle_type = "Target language"
+
                 output_srt_path = Path(output_dir) / output_srt_filename
 
-                # Generate and save target language SRT
+                # Generate and save SRT
                 srt_content = generate_srt_content(subtitles, merge_short=True)
                 if save_srt_file(srt_content, str(output_srt_path)):
-                    print_success(f"Target language subtitle saved: {output_srt_path}")
+                    print_success(f"{subtitle_type} subtitle saved: {output_srt_path}")
                 else:
-                    print_error("Failed to save target language subtitle")
+                    print_error(f"Failed to save {subtitle_type.lower()} subtitle")
                     return 1
-
-                # Generate source language SRT if requested
-                if subtitle_source_lang and source_subtitles:
-                    source_srt_filename = f"{input_path.stem}.{source_lang}.srt"
-                    source_srt_path = Path(output_dir) / source_srt_filename
-
-                    source_srt_content = generate_srt_content(source_subtitles, merge_short=True)
-                    if save_srt_file(source_srt_content, str(source_srt_path)):
-                        print_success(f"Source language subtitle saved: {source_srt_path}")
 
                 # Print summary
                 print_header("Subtitle Generation Result")
                 print_success(f"Generated {len(subtitles)} subtitle entries")
-                print_info(f"Target language SRT: {output_srt_path}")
-                if subtitle_source_lang and source_subtitles:
-                    print_info(f"Source language SRT: {source_srt_path}")
-                    print_info(f"Source entries: {len(source_subtitles)}")
+                print_info(f"Subtitle file: {output_srt_path}")
+                if subtitle_source_lang:
+                    print_info(f"Format: Bilingual ({source_lang} + {target_lang})")
 
             except Exception as e:
                 print_error(f"Error during subtitle generation: {e}")

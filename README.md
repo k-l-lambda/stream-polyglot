@@ -80,7 +80,7 @@ Stream-Polyglot is a cross-platform video and audio translation application that
    # Download from https://ffmpeg.org/download.html
    ```
 
-2. **m4t API Server**: Start the SeamlessM4T API server by Docker (6GB GPU memory required at least)
+2. **m4t API Server**: Start the SeamlessM4T API server by Docker (8GB GPU memory required at least)
 
    ```bash
    # Pull the m4t Docker image
