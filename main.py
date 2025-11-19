@@ -196,6 +196,92 @@ def speech_to_text_translation(audio_path, source_lang, target_lang, api_url):
         return None
 
 
+def speech_to_speech_translation(audio_path, source_lang, target_lang, api_url):
+    """Call m4t API for speech-to-speech translation"""
+    try:
+        print_info(f"Translating speech from {source_lang} to {target_lang}...")
+
+        # Read audio file
+        with open(audio_path, 'rb') as f:
+            audio_data = f.read()
+
+        # Prepare multipart form data
+        files = {
+            'audio': ('audio.wav', audio_data, 'audio/wav')
+        }
+        data = {
+            'source_lang': source_lang,
+            'target_lang': target_lang,
+            'response_format': 'json'  # Get JSON with base64 audio
+        }
+
+        # Call m4t S2ST API
+        response = requests.post(
+            f"{api_url}/v1/speech-to-speech-translation",
+            files=files,
+            data=data,
+            timeout=300  # 5 minutes timeout for long audio
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return result
+        else:
+            print_error(f"API error: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+
+    except requests.exceptions.Timeout:
+        print_error("Request timeout. Audio file might be too long.")
+        return None
+    except Exception as e:
+        print_error(f"Error calling m4t S2ST API: {e}")
+        return None
+
+
+def save_audio_to_file(audio_data, sample_rate, output_path):
+    """Save audio array to WAV file"""
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        # Convert list to numpy array
+        audio_array = np.array(audio_data, dtype=np.float32)
+
+        # Save to WAV file
+        sf.write(output_path, audio_array, sample_rate)
+        print_success(f"Audio saved to: {output_path}")
+        return True
+
+    except ImportError as e:
+        print_error(f"Missing required library: {e}")
+        print_info("Please install: pip install numpy soundfile")
+        return False
+    except Exception as e:
+        print_error(f"Error saving audio file: {e}")
+        return False
+
+
+def save_base64_audio_to_file(audio_base64, output_path):
+    """Decode base64 audio and save to WAV file"""
+    try:
+        import base64
+
+        # Decode base64 audio
+        audio_bytes = base64.b64decode(audio_base64)
+
+        # Write to file
+        with open(output_path, 'wb') as f:
+            f.write(audio_bytes)
+
+        print_success(f"Audio saved to: {output_path}")
+        return True
+
+    except Exception as e:
+        print_error(f"Error saving audio file: {e}")
+        return False
+
+
 def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url):
     """Process video file for translation"""
 
@@ -316,8 +402,122 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                 os.unlink(tmp_audio_path)
                 print_info(f"Cleaned up temporary audio file")
 
+    # Process audio dubbing
     if generate_audio:
-        print_warning("Audio dubbing not yet implemented")
+        print_header("Audio Dubbing Generation")
+
+        print_info(f"Source language: {source_lang}")
+        print_info(f"Target language: {target_lang}")
+
+        # Create temporary audio file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
+            tmp_audio_path = tmp_audio.name
+
+        try:
+            # Step 1: Extract audio from video
+            print_info("Step 1/2: Extracting audio from video...")
+            if not extract_audio(input_file, tmp_audio_path):
+                return 1
+
+            # Step 2: Try Speech-to-speech translation first (more efficient)
+            print_info("Step 2/2: Translating speech to speech...")
+            s2st_result = speech_to_speech_translation(tmp_audio_path, source_lang, target_lang, api_url)
+
+            if s2st_result and s2st_result.get('output_audio_base64'):
+                # S2ST succeeded
+                translated_text = s2st_result.get('output_text', '')
+                print_success(f"Speech translation completed!")
+                if translated_text:
+                    print_info(f"Translated text: {translated_text[:100]}{'...' if len(translated_text) > 100 else ''}")
+
+                # Get audio data from result
+                audio_base64 = s2st_result['output_audio_base64']
+
+                # Generate output filename
+                input_path = Path(input_file)
+                output_filename = f"{input_path.stem}.{target_lang}.wav"
+                output_path = Path(output_dir) / output_filename
+
+                # Save base64 audio to file
+                print_info(f"Saving audio to: {output_path}")
+                if not save_base64_audio_to_file(audio_base64, str(output_path)):
+                    return 1
+
+                # Get file size for result display
+                file_size = os.path.getsize(output_path) / 1024  # KB
+
+                # Print result summary
+                print_header("Audio Dubbing Result")
+                print_success("Audio dubbing completed!")
+                print_info(f"Output file: {output_path}")
+                print_info(f"File size: {file_size:.1f} KB")
+                print_info(f"Sample rate: {s2st_result.get('output_sample_rate', 16000)} Hz")
+            else:
+                # S2ST failed, fallback to S2TT + TTS
+                print_warning("Direct S2ST failed, falling back to S2TT + TTS approach...")
+
+                # Get translated text first
+                s2tt_result = speech_to_text_translation(tmp_audio_path, source_lang, target_lang, api_url)
+
+                if s2tt_result is None:
+                    print_error("Failed to translate speech to text")
+                    return 1
+
+                translated_text = s2tt_result.get('output_text', '')
+                if not translated_text:
+                    print_error("No translated text received")
+                    return 1
+
+                print_success(f"Translation completed: {translated_text[:100]}{'...' if len(translated_text) > 100 else ''}")
+
+                # Now generate speech from translated text
+                print_info("Generating speech from translated text...")
+                import requests as req_lib
+
+                try:
+                    tts_response = req_lib.post(
+                        f"{api_url}/v1/text-to-speech",
+                        json={'text': translated_text, 'source_lang': target_lang},
+                        timeout=300
+                    )
+
+                    if tts_response.status_code == 200:
+                        tts_result = tts_response.json()
+                        output_audio = tts_result.get('output_audio', [])
+                        sample_rate = tts_result.get('output_sample_rate', 16000)
+
+                        if output_audio:
+                            # Generate output filename
+                            input_path = Path(input_file)
+                            output_filename = f"{input_path.stem}.{target_lang}.wav"
+                            output_path = Path(output_dir) / output_filename
+
+                            # Save audio file
+                            print_info(f"Saving audio to: {output_path}")
+                            if not save_audio_to_file(output_audio, sample_rate, str(output_path)):
+                                return 1
+
+                            # Print result summary
+                            print_header("Audio Dubbing Result")
+                            print_success("Audio dubbing completed!")
+                            print_info(f"Output file: {output_path}")
+                            print_info(f"Sample rate: {sample_rate} Hz")
+                            print_info(f"Duration: ~{len(output_audio) / sample_rate:.2f} seconds")
+                        else:
+                            print_error("No audio data received from TTS")
+                            return 1
+                    else:
+                        print_error(f"TTS API error: {tts_response.status_code}")
+                        return 1
+                except Exception as e:
+                    print_error(f"TTS generation failed: {e}")
+                    return 1
+
+        finally:
+            # Clean up temporary audio file
+            if os.path.exists(tmp_audio_path):
+                os.unlink(tmp_audio_path)
+                print_info(f"Cleaned up temporary audio file")
 
     return 0
 
