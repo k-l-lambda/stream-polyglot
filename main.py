@@ -204,12 +204,13 @@ def speech_to_text_translation(audio_path, source_lang, target_lang, api_url, ve
         return None
 
 
-def speech_to_speech_translation(audio_path, source_lang, target_lang, api_url, speaker_id=0):
+def speech_to_speech_translation(audio_path, source_lang, target_lang, api_url, speaker_id=0, verbose=True):
     """Call m4t API for speech-to-speech translation"""
     try:
-        print_info(f"Translating speech from {source_lang} to {target_lang}...")
-        if speaker_id != 0:
-            print_info(f"Using speaker voice ID: {speaker_id}")
+        if verbose:
+            print_info(f"Translating speech from {source_lang} to {target_lang}...")
+            if speaker_id != 0:
+                print_info(f"Using speaker voice ID: {speaker_id}")
 
         # Read audio file
         with open(audio_path, 'rb') as f:
@@ -409,8 +410,8 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                             if translated_text:
                                 # If bilingual mode, combine source and target text
                                 if subtitle_source_lang and source_text:
-                                    # Bilingual format: source language on first line, target language on second line
-                                    combined_text = f"{source_text}\n{translated_text}"
+                                    # Bilingual format: target language on first line, source language on second line
+                                    combined_text = f"{translated_text}\n{source_text}"
                                 else:
                                     combined_text = translated_text
 
@@ -469,46 +470,123 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                 traceback.print_exc()
                 return 1
 
-    # Process audio dubbing
+    # Process audio dubbing with timeline-based translation
     if generate_audio:
-        print_header("Audio Dubbing Generation")
+        print_header("Audio Dubbing Generation with Timeline")
 
-        print_info(f"Source language: {source_lang}")
-        print_info(f"Target language: {target_lang}")
+        print_info(f"Audio language: {source_lang}")
+        print_info(f"Dubbed language: {target_lang}")
 
-        # Create temporary audio file
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
-            tmp_audio_path = tmp_audio.name
+        # Create temporary directories
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+            fragments_dir = os.path.join(temp_dir, 'fragments')
 
-        try:
-            # Step 1: Extract audio from video
-            print_info("Step 1/2: Extracting audio from video...")
-            if not extract_audio(input_file, tmp_audio_path):
-                return 1
+            try:
+                # Step 1: Extract audio from video
+                print_info("Step 1/4: Extracting audio from video...")
+                if not extract_audio(input_file, tmp_audio_path):
+                    return 1
 
-            # Step 2: Try Speech-to-speech translation first (more efficient)
-            print_info("Step 2/2: Translating speech to speech...")
-            s2st_result = speech_to_speech_translation(tmp_audio_path, source_lang, target_lang, api_url, speaker_id)
+                # Step 2: Segment audio with timeline
+                print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
+                timeline, metadata = segment_with_timeline(
+                    audio_path=tmp_audio_path,
+                    output_dir=fragments_dir,
+                    chunk_duration=30.0,
+                    m4t_api_url=api_url,
+                    save_timeline=False
+                )
 
-            if s2st_result and s2st_result.get('output_audio_base64'):
-                # S2ST succeeded
-                translated_text = s2st_result.get('output_text', '')
-                print_success(f"Speech translation completed!")
-                if translated_text:
-                    print_info(f"Translated text: {translated_text[:100]}{'...' if len(translated_text) > 100 else ''}")
+                fragment_count = len(timeline)
+                total_duration = metadata.get('total_duration', 0)
+                sample_rate = metadata.get('sample_rate', 16000)
+                print_success(f"Segmented into {fragment_count} speech fragments")
+                print_info(f"Total audio duration: {total_duration:.2f}s")
 
-                # Get audio data from result
-                audio_base64 = s2st_result['output_audio_base64']
+                # Step 3: Translate each fragment to audio
+                print_info(f"Step 3/4: Translating {fragment_count} fragments to speech...")
+
+                import numpy as np
+                import soundfile as sf
+                import base64
+
+                translated_fragments = []
+
+                # Use tqdm progress bar
+                with tqdm(total=fragment_count, desc="Translating", unit="fragment",
+                         bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                         ncols=80) as pbar:
+                    for i, fragment in enumerate(timeline):
+                        fragment_path = os.path.join(fragments_dir, fragment['file'])
+
+                        # Translate fragment to target language speech
+                        s2st_result = speech_to_speech_translation(
+                            fragment_path, source_lang, target_lang, api_url, speaker_id, verbose=False
+                        )
+
+                        if s2st_result and s2st_result.get('output_audio_base64'):
+                            # Decode base64 audio to numpy array
+                            audio_base64 = s2st_result['output_audio_base64']
+                            audio_bytes = base64.b64decode(audio_base64)
+
+                            # Load audio from bytes
+                            import io
+                            audio_array, sr = sf.read(io.BytesIO(audio_bytes))
+
+                            # Store translated fragment with timing
+                            translated_fragments.append({
+                                'start': fragment['start'],
+                                'end': fragment['end'],
+                                'audio': audio_array,
+                                'sample_rate': sr
+                            })
+                        else:
+                            tqdm.write(f"{Colors.YELLOW}⚠ Fragment {i}: Translation failed, skipping{Colors.END}")
+
+                        # Update progress bar
+                        pbar.update(1)
+
+                # Step 4: Concatenate fragments with timeline alignment
+                print_info(f"Step 4/4: Concatenating {len(translated_fragments)} translated fragments...")
+
+                if not translated_fragments:
+                    print_error("No audio fragments translated")
+                    return 1
+
+                # Create final audio array with silence gaps
+                final_duration_samples = int(total_duration * sample_rate)
+                final_audio = np.zeros(final_duration_samples, dtype=np.float32)
+
+                for fragment_data in translated_fragments:
+                    start_sample = int(fragment_data['start'] * sample_rate)
+                    audio_data = fragment_data['audio']
+
+                    # Convert to mono if stereo
+                    if len(audio_data.shape) > 1:
+                        audio_data = np.mean(audio_data, axis=1)
+
+                    # Insert audio at correct position
+                    end_sample = start_sample + len(audio_data)
+                    if end_sample <= final_duration_samples:
+                        final_audio[start_sample:end_sample] = audio_data
+                    else:
+                        # Truncate if exceeds total duration
+                        available = final_duration_samples - start_sample
+                        final_audio[start_sample:] = audio_data[:available]
+
+                # Ensure output directory exists
+                os.makedirs(output_dir, exist_ok=True)
 
                 # Generate output filename
                 input_path = Path(input_file)
                 output_filename = f"{input_path.stem}.{target_lang}.wav"
                 output_path = Path(output_dir) / output_filename
 
-                # Save base64 audio to file
+                # Save final audio
                 print_info(f"Saving audio to: {output_path}")
-                if not save_base64_audio_to_file(audio_base64, str(output_path)):
-                    return 1
+                sf.write(str(output_path), final_audio, sample_rate)
+                print_success(f"Audio saved to: {output_path}")
 
                 # Get file size for result display
                 file_size = os.path.getsize(output_path) / 1024  # KB
@@ -516,75 +594,17 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                 # Print result summary
                 print_header("Audio Dubbing Result")
                 print_success("Audio dubbing completed!")
+                print_success(f"Translated {len(translated_fragments)} speech fragments")
                 print_info(f"Output file: {output_path}")
                 print_info(f"File size: {file_size:.1f} KB")
-                print_info(f"Sample rate: {s2st_result.get('output_sample_rate', 16000)} Hz")
-            else:
-                # S2ST failed, fallback to S2TT + TTS
-                print_warning("Direct S2ST failed, falling back to S2TT + TTS approach...")
+                print_info(f"Sample rate: {sample_rate} Hz")
+                print_info(f"Duration: {total_duration:.2f} seconds")
 
-                # Get translated text first
-                s2tt_result = speech_to_text_translation(tmp_audio_path, source_lang, target_lang, api_url)
-
-                if s2tt_result is None:
-                    print_error("Failed to translate speech to text")
-                    return 1
-
-                translated_text = s2tt_result.get('output_text', '')
-                if not translated_text:
-                    print_error("No translated text received")
-                    return 1
-
-                print_success(f"Translation completed: {translated_text[:100]}{'...' if len(translated_text) > 100 else ''}")
-
-                # Now generate speech from translated text
-                print_info("Generating speech from translated text...")
-                import requests as req_lib
-
-                try:
-                    tts_response = req_lib.post(
-                        f"{api_url}/v1/text-to-speech",
-                        json={'text': translated_text, 'source_lang': target_lang},
-                        timeout=300
-                    )
-
-                    if tts_response.status_code == 200:
-                        tts_result = tts_response.json()
-                        output_audio = tts_result.get('output_audio', [])
-                        sample_rate = tts_result.get('output_sample_rate', 16000)
-
-                        if output_audio:
-                            # Generate output filename
-                            input_path = Path(input_file)
-                            output_filename = f"{input_path.stem}.{target_lang}.wav"
-                            output_path = Path(output_dir) / output_filename
-
-                            # Save audio file
-                            print_info(f"Saving audio to: {output_path}")
-                            if not save_audio_to_file(output_audio, sample_rate, str(output_path)):
-                                return 1
-
-                            # Print result summary
-                            print_header("Audio Dubbing Result")
-                            print_success("Audio dubbing completed!")
-                            print_info(f"Output file: {output_path}")
-                            print_info(f"Sample rate: {sample_rate} Hz")
-                            print_info(f"Duration: ~{len(output_audio) / sample_rate:.2f} seconds")
-                        else:
-                            print_error("No audio data received from TTS")
-                            return 1
-                    else:
-                        print_error(f"TTS API error: {tts_response.status_code}")
-                        return 1
-                except Exception as e:
-                    print_error(f"TTS generation failed: {e}")
-                    return 1
-
-        finally:
-            # Clean up temporary audio file
-            if os.path.exists(tmp_audio_path):
-                os.unlink(tmp_audio_path)
-                print_info(f"Cleaned up temporary audio file")
+            except Exception as e:
+                print_error(f"Error during audio dubbing: {e}")
+                import traceback
+                traceback.print_exc()
+                return 1
 
     return 0
 
