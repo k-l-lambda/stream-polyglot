@@ -9,6 +9,7 @@ import { SubtitleRefiner } from './refiners/llm-refiner.js';
 import { createProvider } from './refiners/providers/factory.js';
 import { logger } from './utils/logger.js';
 import { RefinerConfig } from './types.js';
+import { detectLanguagesFromFilename } from './utils/language-detector.js';
 
 // Load environment variables
 dotenv.config();
@@ -82,6 +83,13 @@ program
       if (bilingual) {
         logger.info('Detected bilingual subtitles (2 lines per entry)');
       }
+
+      // Detect language order from filename
+      const languageInfo = detectLanguagesFromFilename(inputPath);
+      if (languageInfo) {
+        logger.info(`Language order: ${languageInfo.firstLangName} / ${languageInfo.secondLangName}`);
+      }
+
       logger.separator();
 
       // Create refiner configuration
@@ -114,7 +122,7 @@ program
       }
 
       // Perform refinement
-      const refined = await refiner.refine(subtitles);
+      const refined = await refiner.refine(subtitles, languageInfo);
 
       // Write output file (if not dry run)
       if (!options.dryRun) {

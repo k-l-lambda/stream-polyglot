@@ -80,7 +80,23 @@ export function formatWindowDisplay(window: SubtitleWindow): string {
   for (const entry of window.entries) {
     const marker = entry.state === 'finished' ? '✓' : '○';
     const centerMarker = entry.index === window.firstUnfinishedIndex ? ' ← CENTER' : '';
-    const preview = entry.text.replace(/\n/g, ' | ').substring(0, 50);
+
+    // Format preview with proper truncation
+    const textLines = entry.text.split('\n');
+    let preview: string;
+
+    if (textLines.length === 2) {
+      // Bilingual: show both lines with separator, truncate if needed
+      const maxLen = 45;
+      const line1 = textLines[0].length > maxLen ? textLines[0].substring(0, maxLen) + '...' : textLines[0];
+      const line2 = textLines[1].length > maxLen ? textLines[1].substring(0, maxLen) + '...' : textLines[1];
+      preview = `${line1} | ${line2}`;
+    } else {
+      // Monolingual: truncate single line
+      const maxLen = 95;
+      preview = entry.text.length > maxLen ? entry.text.substring(0, maxLen) + '...' : entry.text;
+    }
+
     lines.push(`  ${marker} [${entry.index}] ${preview}${centerMarker}`);
   }
 

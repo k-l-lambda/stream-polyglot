@@ -1,19 +1,17 @@
-import { LLMProvider, RefinerConfig, ProcessingStats, Subtitle } from '../types.js';
+import { LLMProvider, RefinerConfig, ProcessingStats, Subtitle, LanguageInfo } from '../types.js';
 import { SubtitleStateManager } from '../utils/state-manager.js';
 import { createCenteredWindow, formatWindowDisplay } from '../utils/window.js';
 import { logger } from '../utils/logger.js';
-import { DEFAULT_SYSTEM_PROMPT } from '../prompts/default-prompts.js';
+import { buildSystemPrompt } from '../prompts/default-prompts.js';
 
 export class SubtitleRefiner {
   private provider: LLMProvider;
   private config: RefinerConfig;
-  private systemPrompt: string;
   private stats: ProcessingStats;
 
   constructor(provider: LLMProvider, config: RefinerConfig) {
     this.provider = provider;
     this.config = config;
-    this.systemPrompt = DEFAULT_SYSTEM_PROMPT;
     this.stats = {
       totalSubtitles: 0,
       finishedSubtitles: 0,
@@ -32,7 +30,7 @@ export class SubtitleRefiner {
   /**
    * Refine all subtitles using centered window strategy with function calling
    */
-  async refine(subtitles: Subtitle[]): Promise<Subtitle[]> {
+  async refine(subtitles: Subtitle[], languageInfo: LanguageInfo | null = null): Promise<Subtitle[]> {
     if (subtitles.length === 0) {
       logger.warn('No subtitles to refine');
       return subtitles;
@@ -44,8 +42,11 @@ export class SubtitleRefiner {
     logger.info(`Total subtitles: ${subtitles.length}`);
     logger.separator();
 
-    // Initialize state manager
-    const stateManager = new SubtitleStateManager(subtitles);
+    // Build system prompt with language info
+    const systemPrompt = buildSystemPrompt(languageInfo);
+
+    // Initialize state manager with language info
+    const stateManager = new SubtitleStateManager(subtitles, languageInfo);
     this.stats.totalSubtitles = subtitles.length;
 
     if (this.config.dryRun) {
@@ -89,15 +90,15 @@ export class SubtitleRefiner {
         this.stats.noProgressRounds = 0; // Reset counter when progress is made
       }
 
-      // Call LLM with retry prompt if stuck
-      const retryPrompt = isStuck ? 'RETRY' : undefined;
+      // Call LLM with retry flag if stuck
+      const isRetry = isStuck;
 
       try {
         this.stats.llmCalls++;
         const functionCalls = await this.provider.refine(
           window,
-          this.systemPrompt,
-          retryPrompt
+          systemPrompt,
+          isRetry
         );
 
         // Process function calls
@@ -167,15 +168,15 @@ export class SubtitleRefiner {
       }
       return success;
     } else if (call.name === 'this_should_be') {
-      const tarText = call.arguments?.tar_text;
-      const srcText = call.arguments?.src_text;
+      const firstLangText = call.arguments?.first_lang_text;
+      const secondLangText = call.arguments?.second_lang_text;
 
-      if (!tarText || !srcText) {
+      if (!firstLangText || !secondLangText) {
         logger.warn(`Invalid this_should_be call for #${id}: missing text`);
         return false;
       }
 
-      const success = stateManager.markRefined(id, srcText, tarText);
+      const success = stateManager.markRefined(id, firstLangText, secondLangText);
       if (success) {
         logger.debug(`✓ Refined #${id}`);
       } else {

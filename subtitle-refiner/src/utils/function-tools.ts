@@ -51,16 +51,16 @@ export const THIS_SHOULD_BE_TOOL: FunctionTool = {
           type: 'number',
           description: 'Subtitle index number',
         },
-        tar_text: {
+        first_lang_text: {
           type: 'string',
-          description: 'Refined target language text (translation)',
+          description: 'First line language text (refined)',
         },
-        src_text: {
+        second_lang_text: {
           type: 'string',
-          description: 'Refined source language text (original)',
+          description: 'Second line language text (refined)',
         },
       },
-      required: ['id', 'tar_text', 'src_text'],
+      required: ['id', 'first_lang_text', 'second_lang_text'],
     },
   },
 };

@@ -1,4 +1,14 @@
 /**
+ * Language order information
+ */
+export interface LanguageInfo {
+  firstLang: string; // e.g., "cmn" or "eng"
+  secondLang: string; // e.g., "eng" or "cmn"
+  firstLangName: string; // e.g., "Chinese" or "English"
+  secondLangName: string; // e.g., "English" or "Chinese"
+}
+
+/**
  * Subtitle entry structure
  */
 export interface Subtitle {
@@ -20,8 +30,8 @@ export type SubtitleState = 'unfinished' | 'finished';
 export interface SubtitleWithState extends Subtitle {
   state: SubtitleState;
   refined?: {
-    srcText: string;
-    tarText: string;
+    firstLangText: string;
+    secondLangText: string;
   };
 }
 
@@ -44,8 +54,8 @@ export interface FunctionCall {
   name: 'this_is_fine' | 'this_should_be';
   arguments: {
     id?: number;
-    src_text?: string;
-    tar_text?: string;
+    first_lang_text?: string;
+    second_lang_text?: string;
   };
 }
 
@@ -56,7 +66,7 @@ export interface LLMProvider {
   refine(
     window: SubtitleWindow,
     systemPrompt: string,
-    retryPrompt?: string
+    isRetry?: boolean
   ): Promise<FunctionCall[]>;
   getName(): string;
   supportsFunctionCalling(): boolean;

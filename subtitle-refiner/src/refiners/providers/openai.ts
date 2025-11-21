@@ -3,7 +3,7 @@ import { LLMProvider, SubtitleWindow, FunctionCall } from '../../types.js';
 import { logger } from '../../utils/logger.js';
 import { getOpenAITools } from '../../utils/function-tools.js';
 import { formatWindowForLLM } from '../../utils/window.js';
-import { DEFAULT_SYSTEM_PROMPT, buildUserPrompt } from '../../prompts/default-prompts.js';
+import { buildUserPrompt } from '../../prompts/default-prompts.js';
 
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
@@ -28,22 +28,25 @@ export class OpenAIProvider implements LLMProvider {
   async refine(
     window: SubtitleWindow,
     systemPrompt: string,
-    retryPrompt?: string
+    isRetry: boolean = false
   ): Promise<FunctionCall[]> {
     try {
       const windowContent = formatWindowForLLM(window);
-      const userPrompt = buildUserPrompt(windowContent, !!retryPrompt);
+      const userPrompt = buildUserPrompt(windowContent, isRetry);
 
       logger.debug(`Sending request to OpenAI (${this.model})`);
       logger.debug(`Window: ${window.windowStartIndex}-${window.windowEndIndex}`);
       logger.debug(`Unfinished: ${window.unfinishedCount}`);
+      if (isRetry) {
+        logger.debug(`RETRY mode: Adding retry prompt to user message`);
+      }
 
       const requestPayload: any = {
         model: this.model,
         messages: [
           {
             role: 'system',
-            content: systemPrompt || DEFAULT_SYSTEM_PROMPT,
+            content: systemPrompt,
           },
           {
             role: 'user',
@@ -77,16 +80,18 @@ export class OpenAIProvider implements LLMProvider {
             const name = toolCall.function.name as 'this_is_fine' | 'this_should_be';
             const args = JSON.parse(toolCall.function.arguments);
 
+            logger.debug(`Raw args: ${JSON.stringify(args)}`);
+
             functionCalls.push({
               name,
               arguments: {
                 id: args.id,
-                src_text: args.src_text,
-                tar_text: args.tar_text,
+                first_lang_text: args.first_lang_text,
+                second_lang_text: args.second_lang_text,
               },
             });
 
-            logger.debug(`Function call: ${name}(${args.id})`);
+            logger.debug(`Function call: ${name}(${args.id}${args.first_lang_text ? `, "${args.first_lang_text.substring(0, 20)}..."` : ''}${args.second_lang_text ? `, "${args.second_lang_text.substring(0, 20)}..."` : ''})`);
           }
         }
       }

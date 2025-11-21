@@ -1,17 +1,27 @@
-import { Subtitle, SubtitleWithState, SubtitleState } from '../types.js';
+import { Subtitle, SubtitleWithState, SubtitleState, LanguageInfo } from '../types.js';
 
 /**
  * Manages subtitle processing state
  */
 export class SubtitleStateManager {
   private subtitles: SubtitleWithState[];
+  private languageInfo: LanguageInfo | null;
 
-  constructor(subtitles: Subtitle[]) {
+  constructor(subtitles: Subtitle[], languageInfo: LanguageInfo | null = null) {
+    this.languageInfo = languageInfo;
+
     // Initialize all subtitles as unfinished
     this.subtitles = subtitles.map((sub) => ({
       ...sub,
       state: 'unfinished' as SubtitleState,
     }));
+  }
+
+  /**
+   * Get language info
+   */
+  getLanguageInfo(): LanguageInfo | null {
+    return this.languageInfo;
   }
 
   /**
@@ -45,17 +55,20 @@ export class SubtitleStateManager {
 
   /**
    * Mark subtitle as finished with refined text
-   * Returns true only if it was previously unfinished or text changed
+   * Stores in the order specified by filename (first_lang, second_lang)
    */
-  markRefined(index: number, srcText: string, tarText: string): boolean {
+  markRefined(index: number, firstLangText: string, secondLangText: string): boolean {
     const sub = this.get(index);
     if (!sub) return false;
 
-    // Always allow re-refinement (improved translation)
+    // Store in filename order (line1 = firstLang, line2 = secondLang)
+    const line1 = firstLangText;
+    const line2 = secondLangText;
+
     sub.state = 'finished';
-    sub.refined = { srcText, tarText };
-    sub.text = `${tarText}\n${srcText}`;
-    sub.lines = [tarText, srcText];
+    sub.refined = { firstLangText, secondLangText };
+    sub.text = `${line1}\n${line2}`;
+    sub.lines = [line1, line2];
     return true;
   }
 
