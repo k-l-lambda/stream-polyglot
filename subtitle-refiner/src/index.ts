@@ -108,6 +108,7 @@ program
         const provider = createProvider(options.provider, {
           openaiKey: process.env.OPENAI_API_KEY,
           openaiModel: options.model || process.env.OPENAI_MODEL,
+          openaiBaseURL: process.env.OPENAI_BASE_URL,
         });
         refiner = new SubtitleRefiner(provider, config);
       }

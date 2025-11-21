@@ -6,6 +6,7 @@ export function createProvider(
   config: {
     openaiKey?: string;
     openaiModel?: string;
+    openaiBaseURL?: string;
   }
 ): LLMProvider {
   switch (providerName.toLowerCase()) {
@@ -15,7 +16,8 @@ export function createProvider(
       }
       return new OpenAIProvider(
         config.openaiKey,
-        config.openaiModel || 'gpt-4-turbo-preview'
+        config.openaiModel || 'gpt-4-turbo-preview',
+        config.openaiBaseURL
       );
 
     default:
