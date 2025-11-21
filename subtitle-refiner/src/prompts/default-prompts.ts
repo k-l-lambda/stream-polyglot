@@ -37,22 +37,27 @@ Focus on:
 - Maintaining appropriate subtitle length
 ${languageGuidance}
 
-Guidelines:
-- Review subtitles and call functions for those that need attention
-- You can refine subtitles multiple times if you see room for improvement
+IMPORTANT Guidelines:
+- You MUST call a function for EVERY unfinished subtitle (marked with ○) in the window
+- Call multiple functions in a single response to process all unfinished subtitles at once
+- Already finished subtitles (marked with ✓) can be skipped
+- The more subtitles you process per round, the faster the refinement completes
 
-Make function calls for the subtitles you want to mark or refine.`;
+Example: If you see 5 unfinished subtitles, you should make 5 function calls in your response.`;
 }
 
 export const RETRY_PROMPT = `You didn't call any functions in your previous response.
 
 You MUST use function calls to mark subtitles. Do not write explanatory text without function calls.
 
+IMPORTANT: Call a function for EVERY unfinished subtitle (marked with ○) in the window.
+
 Examples:
 - If subtitle #5 is fine: Call this_is_fine(5)
 - If subtitle #6 needs changes: Call this_should_be(6, "improved target", "improved source")
+- If you see 5 unfinished subtitles, make 5 function calls
 
-Please review the subtitles and call the appropriate functions now.`;
+Please review ALL unfinished subtitles and call the appropriate functions now.`;
 
 export function buildUserPrompt(
   windowContent: string,
