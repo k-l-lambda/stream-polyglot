@@ -38,7 +38,7 @@ export class OpenAIProvider implements LLMProvider {
       logger.debug(`Window: ${window.windowStartIndex}-${window.windowEndIndex}`);
       logger.debug(`Unfinished: ${window.unfinishedCount}`);
 
-      const response = await this.client.chat.completions.create({
+      const requestPayload: any = {
         model: this.model,
         messages: [
           {
@@ -52,8 +52,16 @@ export class OpenAIProvider implements LLMProvider {
         ],
         tools: getOpenAITools(),
         tool_choice: 'auto',
-        temperature: 0.3,
-      });
+      };
+
+      // gpt-5-mini has beta limitations: no custom temperature
+      if (!this.model.includes('gpt-5-mini')) {
+        requestPayload.temperature = 0.3;
+      }
+
+      logger.debug(`Request payload: ${JSON.stringify(requestPayload, null, 2)}`);
+
+      const response = await this.client.chat.completions.create(requestPayload);
 
       const message = response.choices[0]?.message;
       if (!message) {
@@ -89,6 +97,7 @@ export class OpenAIProvider implements LLMProvider {
     } catch (error) {
       if (error instanceof Error) {
         logger.error(`OpenAI API error: ${error.message}`);
+        logger.error(`Error details: ${JSON.stringify(error, null, 2)}`);
       }
       throw error;
     }
