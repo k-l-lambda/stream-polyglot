@@ -7,14 +7,23 @@ export class SubtitleStateManager {
   private subtitles: SubtitleWithState[];
   private languageInfo: LanguageInfo | null;
 
-  constructor(subtitles: Subtitle[], languageInfo: LanguageInfo | null = null) {
+  constructor(subtitles: Subtitle[] | SubtitleWithState[], languageInfo: LanguageInfo | null = null) {
     this.languageInfo = languageInfo;
 
-    // Initialize all subtitles as unfinished
-    this.subtitles = subtitles.map((sub) => ({
-      ...sub,
-      state: 'unfinished' as SubtitleState,
-    }));
+    // Check if subtitles already have state (from checkpoint)
+    const firstSub = subtitles[0] as any;
+    const hasState = firstSub && 'state' in firstSub;
+
+    if (hasState) {
+      // Preserve existing state (checkpoint restore)
+      this.subtitles = subtitles as SubtitleWithState[];
+    } else {
+      // Initialize all subtitles as unfinished (new run)
+      this.subtitles = subtitles.map((sub) => ({
+        ...sub,
+        state: 'unfinished' as SubtitleState,
+      }));
+    }
   }
 
   /**

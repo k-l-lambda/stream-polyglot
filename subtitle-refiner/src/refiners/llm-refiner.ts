@@ -8,7 +8,6 @@ import {
   loadCheckpoint,
   deleteCheckpoint,
   checkpointExists,
-  getCheckpointInfo,
 } from '../utils/checkpoint.js';
 
 export class SubtitleRefiner {
@@ -72,7 +71,9 @@ export class SubtitleRefiner {
           noProgressRounds: 0,
         };
         startRound = checkpoint.progress.rounds;
-        windowStartPosition = checkpoint.windowStartPosition;
+        // Don't restore windowStartPosition - let it recalculate naturally
+        // based on current firstUnfinished position
+        windowStartPosition = null;
 
         logger.info(`Resumed at round ${startRound + 1}`);
         logger.info(
@@ -117,6 +118,14 @@ export class SubtitleRefiner {
         break; // All finished
       }
 
+      // Log if window position was adjusted by constraints
+      if (windowStartPosition !== null && window.windowStartIndex !== windowStartPosition) {
+        const extraSteps = window.windowStartIndex - windowStartPosition;
+        logger.info(
+          `(Window adjusted by constraint: intended #${windowStartPosition} → actual #${window.windowStartIndex}, moved ${extraSteps} extra step${extraSteps > 1 ? 's' : ''})`
+        );
+      }
+
       logger.header(`Round ${round}`);
       logger.info(formatWindowDisplay(window));
       logger.separator();
@@ -144,15 +153,18 @@ export class SubtitleRefiner {
         const firstEntryFinished = window.entries.length > 0 && window.entries[0].state === 'finished';
         const hasFunctionCalls = functionCalls.length > 0;
 
+        logger.debug(`Progress check: noProgress=${noProgress}, firstEntryFinished=${firstEntryFinished}, hasFunctionCalls=${hasFunctionCalls}`);
+        logger.debug(`Window state: firstUnfinished=#${window.firstUnfinishedIndex}, previousFirstUnfinished=#${previousFirstUnfinished}, windowStartPosition=${windowStartPosition}`);
+
         // If window didn't move and first entry is already finished, force window to slide forward
         if (noProgress && firstEntryFinished) {
           logger.info(`Window didn't move and first entry #${window.entries[0].index} is already finished`);
-          logger.info(`Forcing window to slide forward by 1 position`);
 
-          // Move window start position forward by 1
-          windowStartPosition = window.windowStartIndex + 1;
+          // Move window start position forward by 1 (may move more due to constraints)
+          const oldStart: number = window.windowStartIndex;
+          windowStartPosition = oldStart + 1;
 
-          logger.success(`Next round will start from #${windowStartPosition}`);
+          logger.info(`Forcing window to slide forward (next start: #${windowStartPosition})`);
           this.stats.noProgressRounds = 0;
         } else if (noProgress && !hasFunctionCalls) {
           // Truly stuck: LLM didn't call any functions and window first entry is not finished
@@ -186,8 +198,18 @@ export class SubtitleRefiner {
 
           logger.success(`Retry processed ${retryProcessedCount} function calls`);
         } else {
-          // Normal progress
-          this.stats.noProgressRounds = 0; // Reset counter when progress is made
+          // Normal case - could be progress or no progress with function calls
+          // Only reset forced window position if actual progress was made
+          if (!noProgress) {
+            // firstUnfinished moved forward - return to centered window
+            logger.debug(`Progress made! Resetting windowStartPosition from ${windowStartPosition} to null`);
+            windowStartPosition = null;
+          } else {
+            // If noProgress but we're here, it means LLM called functions but they were duplicates
+            // Keep windowStartPosition as-is for next iteration
+            logger.debug(`No progress but functions called. Keeping windowStartPosition=${windowStartPosition}`);
+          }
+          this.stats.noProgressRounds = 0;
         }
 
         // Update stats
