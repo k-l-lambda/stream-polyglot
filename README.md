@@ -8,7 +8,9 @@ Stream-Polyglot is a cross-platform video and audio translation application that
 
 - **Video Translation**: Extract audio from video files, translate speech to text in target language
 - **Subtitle Generation**: Automatically generate SRT/VTT subtitle files with accurate timestamps
+- **Bilingual Subtitles**: Generate subtitles with both source and target languages
 - **Audio Dubbing**: Replace original audio with translated speech (text-to-speech in target language)
+- **Voice Cloning Translation**: Generate voice-cloned audio from bilingual SRT files using GPT-SoVITS
 - **Multi-format Support**: Works with MP4, MKV, WebM, AVI, and various audio formats (WAV, MP3, FLAC, M4A, OGG)
 - **100+ Languages**: Supports speech input in 101 languages and text output in 96 languages via SeamlessM4T
 - **Cross-platform**: Runs on Windows, macOS, and Linux
@@ -149,6 +151,27 @@ Generate Chinese subtitles for English video:
 python -m main video.mp4 --lang eng:cmn --subtitle
 ```
 
+### Generate Bilingual Subtitles
+
+Generate bilingual subtitles (English + Chinese):
+
+```bash
+python -m main video.mp4 --lang eng:cmn --subtitle --subtitle-source-lang
+```
+
+Output format (video.eng-cmn.srt):
+```srt
+1
+00:00:01,000 --> 00:00:04,000
+你好，今天怎么样？
+Hello, how are you today?
+
+2
+00:00:05,000 --> 00:00:08,000
+我很好，谢谢！
+I'm doing great, thank you!
+```
+
 ### Generate Audio Dubbing
 
 Replace audio with translated speech:
@@ -156,6 +179,41 @@ Replace audio with translated speech:
 ```bash
 python -m main video.mp4 --lang eng:jpn --audio
 ```
+
+### Generate Voice-Cloned Audio from Bilingual Subtitles
+
+**NEW FEATURE**: Generate voice-cloned audio using bilingual SRT subtitles with GPT-SoVITS voice cloning:
+
+```bash
+# Option 1: Use existing cached timeline (fast)
+# First generate bilingual subtitle to create cache
+python -m main video.mp4 --lang eng:cmn --subtitle --subtitle-source-lang
+
+# Then generate voice-cloned audio using cache
+python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt
+
+# Option 2: Direct voice cloning (automatic segmentation if no cache)
+# If cache doesn't exist, it will automatically extract audio and segment it
+python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt
+
+# Option 3: Infer language from SRT filename
+python -m main --trans-voice video.eng-cmn.srt
+```
+
+**How it works:**
+1. Reads bilingual SRT file (target language + source language)
+2. Checks for cached timeline; if not found, automatically extracts audio and segments it
+3. Matches subtitle timing with cached audio fragments
+4. Uses cached fragment audio as reference for voice cloning
+5. Generates target language speech with cloned voice characteristics
+6. Concatenates all segments into final audio track
+
+**Benefits:**
+- Preserves original speaker's voice characteristics
+- Better than generic TTS (more natural and expressive)
+- Reuses cached timeline data for fast processing
+- Automatic segmentation if cache doesn't exist
+- Perfect for dubbing videos while maintaining voice identity
 
 ### Generate Both Subtitles and Audio
 
@@ -169,15 +227,6 @@ python -m main video.mp4 --lang eng:cmn --subtitle --audio
 
 ```bash
 python -m main video.mp4 --lang jpn:eng --subtitle --output ./translated/
-```
-
-### Use Custom Subtitle Source Language
-
-When video audio language differs from the main translation pair:
-
-```bash
-# Translate Japanese audio to Chinese subtitles
-python -m main video.mp4 --lang eng:cmn --subtitle --subtitle-source-lang jpn
 ```
 
 ### Use Custom API Server

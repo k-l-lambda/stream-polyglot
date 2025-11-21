@@ -15,6 +15,117 @@ Second subtitle text
 
 from typing import List, Dict
 import math
+import re
+
+
+def parse_srt_timestamp(timestamp: str) -> float:
+    """
+    Parse SRT timestamp format to seconds
+
+    Args:
+        timestamp: SRT timestamp (e.g., "00:00:04,354")
+
+    Returns:
+        Time in seconds (float)
+
+    Examples:
+        >>> parse_srt_timestamp("00:00:04,354")
+        4.354
+        >>> parse_srt_timestamp("00:02:05,678")
+        125.678
+    """
+    # Format: HH:MM:SS,mmm
+    match = re.match(r'(\d+):(\d+):(\d+),(\d+)', timestamp)
+    if not match:
+        raise ValueError(f"Invalid SRT timestamp format: {timestamp}")
+
+    hours, minutes, seconds, milliseconds = map(int, match.groups())
+    return hours * 3600 + minutes * 60 + seconds + milliseconds / 1000.0
+
+
+def parse_srt_file(srt_path: str) -> List[Dict]:
+    """
+    Parse SRT subtitle file
+
+    Args:
+        srt_path: Path to SRT file
+
+    Returns:
+        List of subtitle dicts with keys: index, start, end, text
+        For bilingual subtitles, text contains both languages separated by newline
+
+    Example:
+        subtitles = parse_srt_file("video.srt")
+        # Each entry: {"index": 1, "start": 4.354, "end": 5.470, "text": "Target\\nSource"}
+    """
+    subtitles = []
+
+    with open(srt_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Split by double newlines (entries are separated by blank lines)
+    entries = re.split(r'\n\n+', content.strip())
+
+    for entry in entries:
+        if not entry.strip():
+            continue
+
+        lines = entry.strip().split('\n')
+        if len(lines) < 3:
+            continue  # Invalid entry
+
+        try:
+            # Line 1: Index
+            index = int(lines[0].strip())
+
+            # Line 2: Timestamps
+            timestamp_line = lines[1].strip()
+            match = re.match(r'(.+?)\s*-->\s*(.+)', timestamp_line)
+            if not match:
+                continue
+
+            start_ts, end_ts = match.groups()
+            start = parse_srt_timestamp(start_ts.strip())
+            end = parse_srt_timestamp(end_ts.strip())
+
+            # Lines 3+: Text (may be multiple lines for bilingual subtitles)
+            text = '\n'.join(lines[2:])
+
+            subtitles.append({
+                'index': index,
+                'start': start,
+                'end': end,
+                'text': text
+            })
+
+        except (ValueError, IndexError) as e:
+            # Skip invalid entries
+            continue
+
+    return subtitles
+
+
+def extract_bilingual_text(text: str) -> tuple:
+    """
+    Extract target and source text from bilingual subtitle
+
+    Assumes format: Target language on first line, source language on second line
+
+    Args:
+        text: Bilingual subtitle text
+
+    Returns:
+        Tuple of (target_text, source_text)
+        If only one line, returns (text, text)
+    """
+    lines = text.strip().split('\n')
+
+    if len(lines) >= 2:
+        return lines[0].strip(), lines[1].strip()
+    elif len(lines) == 1:
+        return lines[0].strip(), lines[0].strip()
+    else:
+        return "", ""
 
 
 def format_srt_timestamp(seconds: float) -> str:

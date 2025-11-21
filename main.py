@@ -21,7 +21,7 @@ from tqdm import tqdm
 from audio_timeline import segment_with_timeline
 
 # Import SRT utilities
-from srt_utils import generate_srt_content, save_srt_file
+from srt_utils import generate_srt_content, save_srt_file, parse_srt_file, extract_bilingual_text
 
 
 class Colors:
@@ -116,6 +116,30 @@ def parse_language_pair(lang_pair):
         return None, None
 
     return source_lang, target_lang
+
+
+def infer_language_from_srt_filename(srt_path):
+    """
+    Infer source and target language from SRT filename
+
+    Expected format: xxx.source-target.srt (e.g., video.eng-cmn.srt)
+
+    Returns:
+        Tuple of (source_lang, target_lang) or (None, None) if not found
+    """
+    import re
+    filename = Path(srt_path).stem
+
+    # Pattern: filename.source-target (e.g., video.eng-cmn)
+    # Match 2-3 letter language codes before .srt extension
+    match = re.search(r'\.([a-z]{2,3})-([a-z]{2,3})$', filename)
+
+    if match:
+        source_lang = match.group(1)
+        target_lang = match.group(2)
+        return source_lang, target_lang
+
+    return None, None
 
 
 def get_video_info(video_path):
@@ -292,6 +316,69 @@ def save_base64_audio_to_file(audio_base64, output_path):
     except Exception as e:
         print_error(f"Error saving audio file: {e}")
         return False
+
+
+def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, prompt_language, api_url, verbose=True):
+    """
+    Call m4t API for voice cloning
+
+    Args:
+        ref_audio_path: Path to reference audio file
+        text: Text to synthesize in target language
+        text_language: Language code for text (SeamlessM4T or GPT-SoVITS code)
+        prompt_text: Transcription of reference audio (source language)
+        prompt_language: Language code for reference audio
+        api_url: m4t API server URL
+        verbose: Print info messages
+
+    Returns:
+        Audio bytes or None on error
+    """
+    try:
+        if verbose:
+            print_info(f"Voice cloning: {text_language} text with {prompt_language} reference...")
+
+        # Read reference audio file
+        with open(ref_audio_path, 'rb') as f:
+            audio_data = f.read()
+
+        # Prepare multipart form data
+        files = {
+            'audio': ('reference.wav', audio_data, 'audio/wav')
+        }
+        data = {
+            'text': text,
+            'text_language': text_language,
+            'prompt_text': prompt_text,
+            'prompt_language': prompt_language
+        }
+
+        # Call m4t voice-clone API
+        response = requests.post(
+            f"{api_url}/v1/voice-clone",
+            files=files,
+            data=data,
+            timeout=120  # 2 minutes timeout
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            # Decode base64 audio
+            import base64
+            audio_base64 = result.get('output_audio_base64', '')
+            audio_bytes = base64.b64decode(audio_base64)
+            return audio_bytes
+        else:
+            print_error(f"Voice clone API error: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+
+    except requests.exceptions.Timeout:
+        print_error("Request timeout during voice cloning")
+        return None
+    except Exception as e:
+        print_error(f"Error calling voice-clone API: {e}")
+        return None
 
 
 def load_timeline_cache(cache_dir):
@@ -726,6 +813,315 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
     return 0
 
 
+def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_dir, api_url):
+    """
+    Process voice cloning translation from bilingual SRT file
+
+    Args:
+        input_file: Input video file (for extracting cache directory)
+        srt_file: Bilingual SRT subtitle file path
+        source_lang: Source language code
+        target_lang: Target language code
+        output_dir: Output directory for generated audio
+        api_url: m4t API server URL
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    print_header("Stream-Polyglot Voice Cloning from Subtitle")
+
+    # Check SRT file exists
+    if not check_file_exists(srt_file):
+        return 1
+
+    # Check m4t server
+    if not check_m4t_server(api_url):
+        return 1
+
+    # Configuration
+    print_header("Voice Cloning Configuration")
+    print_info(f"SRT file: {srt_file}")
+    print_info(f"Source language (reference audio): {source_lang}")
+    print_info(f"Target language (synthesized speech): {target_lang}")
+
+    if output_dir:
+        print_info(f"Output directory: {output_dir}")
+    else:
+        # Default output same directory as SRT file
+        srt_path = Path(srt_file)
+        output_dir = srt_path.parent
+        print_info(f"Output directory: {output_dir} (default)")
+
+    # Prepare cache directory to access timeline fragments
+    input_path = Path(input_file) if input_file else None
+    if input_path and input_path.exists():
+        cache_dir = output_dir / '.stream-polyglot-cache' / input_path.stem
+    else:
+        # If no input file or doesn't exist, derive from SRT filename
+        srt_stem = Path(srt_file).stem.split('.')[0]  # Remove .lang-lang part
+        cache_dir = output_dir / '.stream-polyglot-cache' / srt_stem
+
+    # Try to load cached timeline first
+    cached_timeline, cached_metadata = load_timeline_cache(cache_dir)
+
+    if cached_timeline and cached_metadata:
+        fragments_dir = cached_metadata.get('fragments_dir', '')
+        if fragments_dir and os.path.exists(fragments_dir):
+            # Cache is valid, use it
+            print_success(f"Found {len(cached_timeline)} cached audio fragments")
+            print_info(f"Fragments directory: {fragments_dir}")
+            timeline = cached_timeline
+            metadata = cached_metadata
+        else:
+            # Cache exists but fragments directory is missing, need to re-segment
+            print_warning("Cached timeline exists but fragments directory not found")
+            cached_timeline = None
+            cached_metadata = None
+
+    if not cached_timeline or not cached_metadata:
+        # No valid cache, need to segment audio
+        # Require input file for segmentation
+        if not input_file or not check_file_exists(input_file):
+            print_error("Input video file is required when cached timeline is not available")
+            print_info(f"Expected cache directory: {cache_dir}")
+            print_info("Please provide input video file or run subtitle/audio generation first")
+            return 1
+
+        print_info("No cached timeline found, performing audio segmentation...")
+        fragments_dir = str(cache_dir / 'fragments')
+        os.makedirs(fragments_dir, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+
+            try:
+                # Step 0a: Extract audio from video
+                print_info("Extracting audio from video...")
+                if not extract_audio(input_file, tmp_audio_path):
+                    return 1
+
+                # Step 0b: Segment audio with timeline
+                print_info("Segmenting audio with VAD-based timeline...")
+                timeline, metadata = segment_with_timeline(
+                    audio_path=tmp_audio_path,
+                    output_dir=fragments_dir,
+                    chunk_duration=30.0,
+                    m4t_api_url=api_url,
+                    save_timeline=False
+                )
+
+                fragment_count = len(timeline)
+                total_duration = metadata.get('total_duration', 0)
+                print_success(f"Segmented into {fragment_count} speech fragments")
+                print_info(f"Total audio duration: {total_duration:.2f}s")
+
+                # Save timeline to cache
+                metadata['fragments_dir'] = fragments_dir
+                save_timeline_cache(timeline, metadata, cache_dir, fragments_dir)
+                print_success("Timeline cached for future use")
+
+            except Exception as e:
+                print_error(f"Error during audio extraction/segmentation: {e}")
+                import traceback
+                traceback.print_exc()
+                return 1
+    else:
+        timeline = cached_timeline
+        metadata = cached_metadata
+
+    try:
+        # Step 1: Parse bilingual SRT file
+        print_header("Step 1/4: Parsing Bilingual SRT File")
+        print_info(f"Parsing SRT file: {srt_file}")
+        subtitles = parse_srt_file(srt_file)
+
+        if not subtitles:
+            print_error("No subtitles found in SRT file")
+            return 1
+
+        print_success(f"Parsed {len(subtitles)} subtitle entries")
+
+        # Step 2: Match SRT timing with cached fragments
+        print_header("Step 2/4: Matching Subtitles with Audio Fragments")
+        print_info("Matching subtitle timing with cached audio fragments...")
+
+        timing_tolerance = 0.5  # 0.5 second tolerance for timing match
+        matched_segments = []
+
+        for i, subtitle in enumerate(subtitles):
+            sub_start = subtitle['start']
+            sub_end = subtitle['end']
+            sub_text = subtitle['text']
+
+            # Extract bilingual text (target, source)
+            target_text, source_text = extract_bilingual_text(sub_text)
+
+            if not target_text or not source_text:
+                print_warning(f"Subtitle {i}: Empty text, skipping")
+                continue
+
+            # Find matching cached fragment by timing
+            best_match = None
+            best_diff = float('inf')
+
+            for fragment in cached_timeline:
+                frag_start = fragment['start']
+                frag_end = fragment['end']
+
+                # Calculate timing difference (use start time as primary match)
+                start_diff = abs(sub_start - frag_start)
+                end_diff = abs(sub_end - frag_end)
+                total_diff = start_diff + end_diff
+
+                if start_diff <= timing_tolerance and total_diff < best_diff:
+                    best_match = fragment
+                    best_diff = total_diff
+
+            if best_match:
+                fragment_path = os.path.join(fragments_dir, best_match['file'])
+
+                if os.path.exists(fragment_path):
+                    matched_segments.append({
+                        'subtitle_index': i,
+                        'start': sub_start,
+                        'end': sub_end,
+                        'target_text': target_text,
+                        'source_text': source_text,
+                        'ref_audio_path': fragment_path,
+                        'fragment_info': best_match
+                    })
+                else:
+                    print_warning(f"Subtitle {i}: Fragment file not found: {fragment_path}")
+            else:
+                print_warning(f"Subtitle {i}: No matching fragment found (start: {sub_start:.2f}s)")
+
+        if not matched_segments:
+            print_error("No subtitle-fragment matches found")
+            print_info("Check that subtitle timing matches the audio fragments")
+            return 1
+
+        print_success(f"Matched {len(matched_segments)} subtitle entries with audio fragments")
+        print_info(f"Unmatched: {len(subtitles) - len(matched_segments)} entries")
+
+        # Step 3: Voice clone each segment
+        print_header("Step 3/4: Voice Cloning Translation")
+        print_info(f"Cloning {len(matched_segments)} segments...")
+
+        import numpy as np
+        import soundfile as sf
+        import io
+
+        cloned_segments = []
+
+        # Use tqdm progress bar
+        with tqdm(total=len(matched_segments), desc="Cloning", unit="segment",
+                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                 ncols=80) as pbar:
+                for seg in matched_segments:
+                    # Call voice-clone API
+                    audio_bytes = voice_clone_translation(
+                        ref_audio_path=seg['ref_audio_path'],
+                        text=seg['target_text'],
+                        text_language=target_lang,
+                        prompt_text=seg['source_text'],
+                        prompt_language=source_lang,
+                        api_url=api_url,
+                        verbose=False
+                    )
+
+                    if audio_bytes:
+                        # Load audio from bytes
+                        audio_array, sr = sf.read(io.BytesIO(audio_bytes))
+
+                        cloned_segments.append({
+                            'start': seg['start'],
+                            'end': seg['end'],
+                            'audio': audio_array,
+                            'sample_rate': sr
+                        })
+                    else:
+                        tqdm.write(f"{Colors.YELLOW}⚠ Segment {seg['subtitle_index']}: Voice cloning failed, skipping{Colors.END}")
+
+                    # Update progress bar
+                    pbar.update(1)
+
+        if not cloned_segments:
+            print_error("No segments successfully cloned")
+            return 1
+
+        print_success(f"Successfully cloned {len(cloned_segments)} segments")
+
+        # Step 4: Concatenate cloned segments with timeline alignment
+        print_header("Step 4/4: Concatenating Audio")
+        print_info(f"Concatenating {len(cloned_segments)} cloned segments...")
+
+        # Get total duration from metadata or calculate from last segment
+        total_duration = cached_metadata.get('total_duration', 0)
+        if total_duration == 0 and cloned_segments:
+            total_duration = max(seg['end'] for seg in cloned_segments)
+
+        sample_rate = cached_metadata.get('sample_rate', 16000)
+
+        # Create final audio array with silence gaps
+        final_duration_samples = int(total_duration * sample_rate)
+        final_audio = np.zeros(final_duration_samples, dtype=np.float32)
+
+        for seg_data in cloned_segments:
+            start_sample = int(seg_data['start'] * sample_rate)
+            audio_data = seg_data['audio']
+
+            # Convert to mono if stereo
+            if len(audio_data.shape) > 1:
+                audio_data = np.mean(audio_data, axis=1)
+
+            # Ensure float32
+            if audio_data.dtype != np.float32:
+                audio_data = audio_data.astype(np.float32)
+
+            # Insert audio at correct position
+            end_sample = start_sample + len(audio_data)
+            if end_sample <= final_duration_samples:
+                final_audio[start_sample:end_sample] = audio_data
+            else:
+                # Truncate if exceeds total duration
+                available = final_duration_samples - start_sample
+                if available > 0:
+                    final_audio[start_sample:] = audio_data[:available]
+
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Generate output filename
+        srt_path = Path(srt_file)
+        output_filename = f"{srt_path.stem}.cloned.wav"
+        output_path = Path(output_dir) / output_filename
+
+        # Save final audio
+        print_info(f"Saving audio to: {output_path}")
+        sf.write(str(output_path), final_audio, sample_rate)
+        print_success(f"Audio saved to: {output_path}")
+
+        # Get file size for result display
+        file_size = os.path.getsize(output_path) / 1024  # KB
+
+        # Print result summary
+        print_header("Voice Cloning Result")
+        print_success("Voice cloning translation completed!")
+        print_success(f"Cloned {len(cloned_segments)} speech segments")
+        print_info(f"Output file: {output_path}")
+        print_info(f"File size: {file_size:.1f} KB")
+        print_info(f"Sample rate: {sample_rate} Hz")
+        print_info(f"Duration: {total_duration:.2f} seconds")
+
+    except Exception as e:
+        print_error(f"Error during voice cloning translation: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+    return 0
+
+
 def main():
     """Main CLI entry point"""
     # Load environment variables from .env file
@@ -749,6 +1145,15 @@ Examples:
   # Generate both subtitles and audio dubbing
   python -m main video.mp4 --lang eng:cmn --subtitle --audio
 
+  # Generate bilingual subtitles (English + Chinese)
+  python -m main video.mp4 --lang eng:cmn --subtitle --subtitle-source-lang
+
+  # Generate voice-cloned audio from bilingual SRT file (with --lang)
+  python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt
+
+  # Generate voice-cloned audio from bilingual SRT file (infer from filename)
+  python -m main --trans-voice video.eng-cmn.srt
+
   # Specify output directory
   python -m main video.mp4 --lang jpn:eng --subtitle --output ./translated/
 
@@ -770,13 +1175,14 @@ See http://localhost:8000/languages for full list of supported languages.
     # Positional argument for input video
     parser.add_argument(
         'input',
+        nargs='?',  # Make optional (required only for subtitle/audio modes)
         help='Input video or audio file path'
     )
 
     # Language pair argument
     parser.add_argument(
         '--lang',
-        required=True,
+        required=False,  # Not required if can infer from --trans-voice filename
         metavar='SOURCE:TARGET',
         help='Language pair in format source:target (e.g., eng:cmn, jpn:eng)'
     )
@@ -792,6 +1198,13 @@ See http://localhost:8000/languages for full list of supported languages.
         '--audio',
         action='store_true',
         help='Generate audio dubbing (replace audio track with translated speech)'
+    )
+
+    # Voice cloning from SRT
+    parser.add_argument(
+        '--trans-voice',
+        metavar='SRT_FILE',
+        help='Generate voice-cloned audio from bilingual SRT subtitle file'
     )
 
     # Optional subtitle source language
@@ -827,32 +1240,82 @@ See http://localhost:8000/languages for full list of supported languages.
 
     args = parser.parse_args()
 
-    # Parse language pair
-    source_lang, target_lang = parse_language_pair(args.lang)
-    if not source_lang or not target_lang:
-        return 1
+    # Check if using --trans-voice mode
+    if args.trans_voice:
+        # Voice cloning from SRT file
+        # Language inference: Priority 1: --lang, Priority 2: SRT filename
+        if args.lang:
+            source_lang, target_lang = parse_language_pair(args.lang)
+            if not source_lang or not target_lang:
+                return 1
+        else:
+            # Try to infer from SRT filename
+            source_lang, target_lang = infer_language_from_srt_filename(args.trans_voice)
+            if not source_lang or not target_lang:
+                print_error("Cannot infer language pair from SRT filename")
+                print_info("Please specify --lang or use SRT filename format: xxx.source-target.srt")
+                print_info("Example: video.eng-cmn.srt")
+                return 1
+            print_info(f"Inferred language pair from SRT filename: {source_lang}:{target_lang}")
 
-    # Process video
-    try:
-        return process_video(
-            args.input,
-            source_lang,
-            target_lang,
-            args.audio,
-            args.subtitle,
-            args.subtitle_source_lang,
-            args.output,
-            args.api_url,
-            args.speaker_id
-        )
-    except KeyboardInterrupt:
-        print_error("\n\nInterrupted by user")
-        return 130
-    except Exception as e:
-        print_error(f"\nUnexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
+        # Process voice cloning translation
+        try:
+            return process_trans_voice(
+                input_file=args.input,  # May be None if not provided
+                srt_file=args.trans_voice,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                output_dir=args.output,
+                api_url=args.api_url
+            )
+        except KeyboardInterrupt:
+            print_error("\n\nInterrupted by user")
+            return 130
+        except Exception as e:
+            print_error(f"\nUnexpected error: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
+
+    else:
+        # Normal video processing mode
+        # Validate required arguments for normal mode
+        if not args.input:
+            print_error("Input video file is required")
+            print_info("Usage: python -m main video.mp4 --lang eng:cmn --subtitle")
+            return 1
+
+        if not args.lang:
+            print_error("Language pair (--lang) is required")
+            print_info("Usage: python -m main video.mp4 --lang eng:cmn --subtitle")
+            return 1
+
+        # Parse language pair
+        source_lang, target_lang = parse_language_pair(args.lang)
+        if not source_lang or not target_lang:
+            return 1
+
+        # Process video
+        try:
+            return process_video(
+                args.input,
+                source_lang,
+                target_lang,
+                args.audio,
+                args.subtitle,
+                args.subtitle_source_lang,
+                args.output,
+                args.api_url,
+                args.speaker_id
+            )
+        except KeyboardInterrupt:
+            print_error("\n\nInterrupted by user")
+            return 130
+        except Exception as e:
+            print_error(f"\nUnexpected error: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
 
 
 if __name__ == '__main__':
