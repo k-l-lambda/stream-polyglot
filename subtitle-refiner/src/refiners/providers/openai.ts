@@ -3,11 +3,12 @@ import { LLMProvider, SubtitleWindow, FunctionCall } from '../../types.js';
 import { logger } from '../../utils/logger.js';
 import { getOpenAITools } from '../../utils/function-tools.js';
 import { formatWindowForLLM } from '../../utils/window.js';
-import { buildUserPrompt } from '../../prompts/default-prompts.js';
+import { buildUserPrompt, RETRY_PROMPT } from '../../prompts/default-prompts.js';
 
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
   private model: string;
+  private conversationHistory: Array<{ role: string; content?: string; tool_calls?: any }>;
 
   constructor(apiKey: string, model: string = 'gpt-4-turbo-preview', baseURL?: string) {
     this.client = new OpenAI({
@@ -15,6 +16,7 @@ export class OpenAIProvider implements LLMProvider {
       baseURL: baseURL || undefined,
     });
     this.model = model;
+    this.conversationHistory = [];
   }
 
   getName(): string {
@@ -32,18 +34,31 @@ export class OpenAIProvider implements LLMProvider {
   ): Promise<FunctionCall[]> {
     try {
       const windowContent = formatWindowForLLM(window);
-      const userPrompt = buildUserPrompt(windowContent, isRetry);
 
       logger.debug(`Sending request to OpenAI (${this.model})`);
       logger.debug(`Window: ${window.windowStartIndex}-${window.windowEndIndex}`);
       logger.debug(`Unfinished: ${window.unfinishedCount}`);
-      if (isRetry) {
-        logger.debug(`RETRY mode: Adding retry prompt to user message`);
-      }
 
-      const requestPayload: any = {
-        model: this.model,
-        messages: [
+      let messages: any[];
+
+      if (isRetry && this.conversationHistory.length > 0) {
+        // Retry mode: append RETRY_PROMPT to existing conversation
+        logger.debug(`RETRY mode: Appending retry message to existing conversation`);
+        messages = [
+          {
+            role: 'system',
+            content: systemPrompt,
+          },
+          ...this.conversationHistory,
+          {
+            role: 'user',
+            content: RETRY_PROMPT,
+          },
+        ];
+      } else {
+        // Normal mode: start fresh conversation
+        const userPrompt = buildUserPrompt(windowContent, false);
+        messages = [
           {
             role: 'system',
             content: systemPrompt,
@@ -52,7 +67,19 @@ export class OpenAIProvider implements LLMProvider {
             role: 'user',
             content: userPrompt,
           },
-        ],
+        ];
+        // Clear history for new conversation
+        this.conversationHistory = [
+          {
+            role: 'user',
+            content: userPrompt,
+          },
+        ];
+      }
+
+      const requestPayload: any = {
+        model: this.model,
+        messages,
         tools: getOpenAITools(),
         tool_choice: 'auto',
       };
@@ -71,6 +98,13 @@ export class OpenAIProvider implements LLMProvider {
         throw new Error('No response from OpenAI');
       }
 
+      // Save assistant's response to conversation history
+      this.conversationHistory.push({
+        role: 'assistant',
+        content: message.content || undefined,
+        tool_calls: message.tool_calls || undefined,
+      });
+
       // Extract function calls
       const functionCalls: FunctionCall[] = [];
 
@@ -80,7 +114,7 @@ export class OpenAIProvider implements LLMProvider {
             const name = toolCall.function.name as 'this_is_fine' | 'this_should_be';
             const args = JSON.parse(toolCall.function.arguments);
 
-            logger.debug(`Raw args: ${JSON.stringify(args)}`);
+            //logger.debug(`Raw args: ${JSON.stringify(args)}`);
 
             functionCalls.push({
               name,

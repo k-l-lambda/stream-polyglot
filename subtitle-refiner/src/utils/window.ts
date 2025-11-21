@@ -8,14 +8,17 @@ import { SubtitleStateManager } from './state-manager.js';
  * - Place first unfinished subtitle at window center
  * - Fill window with context (finished) before it
  * - Fill window with remaining (unfinished) after it
+ * - If preferredStart is provided, use it but ensure it's >= firstUnfinished - halfWindow
  *
  * @param stateManager Subtitle state manager
  * @param windowSize Total window size
+ * @param preferredStart Optional preferred window start position (independent control)
  * @returns Window or null if all finished
  */
 export function createCenteredWindow(
   stateManager: SubtitleStateManager,
-  windowSize: number
+  windowSize: number,
+  preferredStart: number | null = null
 ): SubtitleWindow | null {
   const firstUnfinished = stateManager.findFirstUnfinished();
 
@@ -26,17 +29,27 @@ export function createCenteredWindow(
   const totalCount = stateManager.getTotalCount();
   const halfWindow = Math.floor(windowSize / 2);
 
-  // Calculate window bounds
-  let windowStart = firstUnfinished - halfWindow;
-  let windowEnd = firstUnfinished + halfWindow - 1;
+  // Calculate default window bounds (centered on first unfinished)
+  const defaultStart = firstUnfinished - halfWindow;
 
-  // Handle boundary: start of file (Option 1A: first unfinished at left)
-  if (windowStart < 1) {
-    windowStart = 1;
-    windowEnd = Math.min(totalCount, windowSize);
+  // Use preferredStart if provided, but enforce lower bound
+  let windowStart = preferredStart !== null ? preferredStart : defaultStart;
+
+  // Enforce constraint: windowStart >= firstUnfinished - halfWindow
+  // This ensures first unfinished is always within the window
+  const minStart = firstUnfinished - halfWindow;
+  if (windowStart < minStart) {
+    windowStart = minStart;
   }
 
-  // Handle boundary: end of file (Option 2B: maintain window size, center position)
+  // Handle boundary: start of file
+  if (windowStart < 1) {
+    windowStart = 1;
+  }
+
+  let windowEnd = windowStart + windowSize - 1;
+
+  // Handle boundary: end of file
   if (windowEnd > totalCount) {
     windowEnd = totalCount;
     windowStart = Math.max(1, totalCount - windowSize + 1);

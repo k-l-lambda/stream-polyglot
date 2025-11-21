@@ -56,13 +56,18 @@ export class SubtitleRefiner {
     // Main processing loop
     let round = 0;
     let previousFirstUnfinished = -1;
+    let windowStartPosition: number | null = null; // Independent window position
 
     while (!stateManager.isAllFinished()) {
       round++;
       this.stats.rounds = round;
 
-      // Create centered window
-      const window = createCenteredWindow(stateManager, this.config.windowSize);
+      // Create window with optional preferred start position
+      const window = createCenteredWindow(
+        stateManager,
+        this.config.windowSize,
+        windowStartPosition
+      );
 
       if (!window) {
         break; // All finished
@@ -72,33 +77,12 @@ export class SubtitleRefiner {
       logger.info(formatWindowDisplay(window));
       logger.separator();
 
-      // Check if stuck (no progress from last round)
-      const isStuck = window.firstUnfinishedIndex === previousFirstUnfinished;
-      if (isStuck) {
-        this.stats.noProgressRounds++;
-        logger.warn(`No progress detected (still at #${window.firstUnfinishedIndex})`);
-
-        // Fail if stuck too long
-        if (this.stats.noProgressRounds >= this.config.maxRetries) {
-          logger.error(`Failed after ${this.config.maxRetries} attempts with no progress`);
-          logger.error('LLM is not calling functions properly');
-          throw new Error(
-            `Refinement failed: No progress after ${this.config.maxRetries} rounds`
-          );
-        }
-      } else {
-        this.stats.noProgressRounds = 0; // Reset counter when progress is made
-      }
-
-      // Call LLM with retry flag if stuck
-      const isRetry = isStuck;
-
       try {
         this.stats.llmCalls++;
         const functionCalls = await this.provider.refine(
           window,
           systemPrompt,
-          isRetry
+          false // First attempt is never a retry
         );
 
         // Process function calls
@@ -111,6 +95,57 @@ export class SubtitleRefiner {
 
         logger.success(`Processed ${processedCount} function calls`);
 
+        // Check if stuck (no actual progress from last round)
+        const noProgress = window.firstUnfinishedIndex === previousFirstUnfinished;
+        const firstEntryFinished = window.entries.length > 0 && window.entries[0].state === 'finished';
+        const hasFunctionCalls = functionCalls.length > 0;
+
+        // If window didn't move and first entry is already finished, force window to slide forward
+        if (noProgress && firstEntryFinished) {
+          logger.info(`Window didn't move and first entry #${window.entries[0].index} is already finished`);
+          logger.info(`Forcing window to slide forward by 1 position`);
+
+          // Move window start position forward by 1
+          windowStartPosition = window.windowStartIndex + 1;
+
+          logger.success(`Next round will start from #${windowStartPosition}`);
+          this.stats.noProgressRounds = 0;
+        } else if (noProgress && !hasFunctionCalls) {
+          // Truly stuck: LLM didn't call any functions and window first entry is not finished
+          this.stats.noProgressRounds++;
+          logger.warn(`No progress detected: still at #${window.firstUnfinishedIndex}, no function calls`);
+
+          // Fail if stuck too long
+          if (this.stats.noProgressRounds >= this.config.maxRetries) {
+            logger.error(`Failed after ${this.config.maxRetries} attempts with no progress`);
+            logger.error('LLM is not calling functions properly');
+            throw new Error(
+              `Refinement failed: No progress after ${this.config.maxRetries} rounds`
+            );
+          }
+
+          // Retry with same window and RETRY_PROMPT
+          logger.info('Retrying with RETRY_PROMPT...');
+          this.stats.llmCalls++;
+          const retryFunctionCalls = await this.provider.refine(
+            window,
+            systemPrompt,
+            true // Retry mode
+          );
+
+          // Process retry function calls
+          let retryProcessedCount = 0;
+          for (const call of retryFunctionCalls) {
+            const success = this.processFunctionCall(stateManager, call);
+            if (success) retryProcessedCount++;
+          }
+
+          logger.success(`Retry processed ${retryProcessedCount} function calls`);
+        } else {
+          // Normal progress
+          this.stats.noProgressRounds = 0; // Reset counter when progress is made
+        }
+
         // Update stats
         this.stats.finishedSubtitles = stateManager.getFinishedCount();
         this.stats.refinedSubtitles = stateManager.getRefinedCount();
@@ -120,8 +155,8 @@ export class SubtitleRefiner {
         );
         logger.separator();
 
-        // Update previous position
-        previousFirstUnfinished = window.firstUnfinishedIndex;
+        // Update previous position with current state (after all processing)
+        previousFirstUnfinished = stateManager.findFirstUnfinished();
 
         // Brief delay to avoid rate limits
         await this.sleep(500);
