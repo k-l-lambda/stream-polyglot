@@ -294,6 +294,59 @@ def save_base64_audio_to_file(audio_base64, output_path):
         return False
 
 
+def load_timeline_cache(cache_dir):
+    """Load cached timeline data if available"""
+    import json
+
+    timeline_json_path = os.path.join(cache_dir, 'timeline.json')
+    if not os.path.exists(timeline_json_path):
+        return None, None
+
+    try:
+        with open(timeline_json_path, 'r') as f:
+            cache_data = json.load(f)
+
+        timeline = cache_data.get('timeline', [])
+        metadata = cache_data.get('metadata', {})
+
+        # Verify all fragment files exist
+        fragments_dir = cache_data.get('fragments_dir', '')
+        if not fragments_dir or not os.path.exists(fragments_dir):
+            return None, None
+
+        for fragment in timeline:
+            fragment_path = os.path.join(fragments_dir, fragment['file'])
+            if not os.path.exists(fragment_path):
+                return None, None
+
+        return timeline, metadata
+    except Exception as e:
+        print_warning(f"Failed to load timeline cache: {e}")
+        return None, None
+
+
+def save_timeline_cache(timeline, metadata, cache_dir, fragments_dir):
+    """Save timeline data to cache file"""
+    import json
+
+    os.makedirs(cache_dir, exist_ok=True)
+    timeline_json_path = os.path.join(cache_dir, 'timeline.json')
+
+    cache_data = {
+        'timeline': timeline,
+        'metadata': metadata,
+        'fragments_dir': fragments_dir
+    }
+
+    try:
+        with open(timeline_json_path, 'w') as f:
+            json.dump(cache_data, f, indent=2)
+        return True
+    except Exception as e:
+        print_warning(f"Failed to save timeline cache: {e}")
+        return False
+
+
 def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url, speaker_id=0):
     """Process video file for translation"""
 
@@ -335,6 +388,11 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
         print_info("  --audio       Generate audio dubbing")
         return 1
 
+    # Prepare cache directory for timeline data
+    input_path = Path(input_file)
+    cache_dir = output_dir / '.stream-polyglot-cache' / input_path.stem
+    os.makedirs(cache_dir, exist_ok=True)
+
     # Process subtitle generation with timeline
     if generate_subtitle:
         print_header("Subtitle Generation with Timeline")
@@ -342,40 +400,69 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
         print_info(f"Audio language: {source_lang}")
         print_info(f"Subtitle language: {target_lang}")
 
-        # Create temporary directories
-        with tempfile.TemporaryDirectory() as temp_dir:
-            tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
-            fragments_dir = os.path.join(temp_dir, 'fragments')
+        # Try to load cached timeline first
+        cached_timeline, cached_metadata = load_timeline_cache(cache_dir)
 
-            try:
-                # Step 1: Extract audio from video
-                print_info("Step 1/4: Extracting audio from video...")
-                if not extract_audio(input_file, tmp_audio_path):
+        if cached_timeline and cached_metadata:
+            print_success("Found cached timeline data, skipping segmentation")
+            timeline = cached_timeline
+            metadata = cached_metadata
+            fragments_dir = cached_metadata.get('fragments_dir', '')
+
+            fragment_count = len(timeline)
+            total_duration = metadata.get('total_duration', 0)
+            print_info(f"Using {fragment_count} cached speech fragments")
+            print_info(f"Total audio duration: {total_duration:.2f}s")
+        else:
+            # Need to segment audio - create persistent cache directory for fragments
+            print_info("No cached timeline found, performing segmentation...")
+            fragments_dir = str(cache_dir / 'fragments')
+            os.makedirs(fragments_dir, exist_ok=True)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+
+                try:
+                    # Step 1: Extract audio from video
+                    print_info("Step 1/4: Extracting audio from video...")
+                    if not extract_audio(input_file, tmp_audio_path):
+                        return 1
+
+                    # Step 2: Segment audio with timeline
+                    print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
+                    timeline, metadata = segment_with_timeline(
+                        audio_path=tmp_audio_path,
+                        output_dir=fragments_dir,
+                        chunk_duration=30.0,
+                        m4t_api_url=api_url,
+                        save_timeline=False
+                    )
+
+                    fragment_count = len(timeline)
+                    total_duration = metadata.get('total_duration', 0)
+                    print_success(f"Segmented into {fragment_count} speech fragments")
+                    print_info(f"Total audio duration: {total_duration:.2f}s")
+
+                    # Save timeline to cache with fragments_dir
+                    metadata['fragments_dir'] = fragments_dir
+                    save_timeline_cache(timeline, metadata, cache_dir, fragments_dir)
+                    print_success("Timeline cached for future use")
+
+                except Exception as e:
+                    print_error(f"Error during audio extraction/segmentation: {e}")
+                    import traceback
+                    traceback.print_exc()
                     return 1
 
-                # Step 2: Segment audio with timeline
-                print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
-                timeline, metadata = segment_with_timeline(
-                    audio_path=tmp_audio_path,
-                    output_dir=fragments_dir,
-                    chunk_duration=30.0,
-                    m4t_api_url=api_url,
-                    save_timeline=False
-                )
+        try:
+            # Step 3: Translate each fragment
+            print_info(f"Step 3/4: Translating {fragment_count} fragments...")
+            subtitles = []
 
-                fragment_count = len(timeline)
-                total_duration = metadata.get('total_duration', 0)
-                print_success(f"Segmented into {fragment_count} speech fragments")
-                print_info(f"Total audio duration: {total_duration:.2f}s")
-
-                # Step 3: Translate each fragment
-                print_info(f"Step 3/4: Translating {fragment_count} fragments...")
-                subtitles = []
-
-                # Use tqdm progress bar
-                with tqdm(total=fragment_count, desc="Translating", unit="fragment",
-                         bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-                         ncols=80) as pbar:
+            # Use tqdm progress bar
+            with tqdm(total=fragment_count, desc="Translating", unit="fragment",
+                     bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                     ncols=80) as pbar:
                     for i, fragment in enumerate(timeline):
                         fragment_path = os.path.join(fragments_dir, fragment['file'])
 
@@ -426,49 +513,49 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                         # Update progress bar
                         pbar.update(1)
 
-                # Step 4: Generate and save SRT files
-                print_info(f"Step 4/4: Generating SRT subtitle files...")
+            # Step 4: Generate and save SRT files
+            print_info(f"Step 4/4: Generating SRT subtitle files...")
 
-                if not subtitles:
-                    print_error("No subtitles generated")
-                    return 1
-
-                # Ensure output directory exists
-                os.makedirs(output_dir, exist_ok=True)
-
-                # Generate output filename
-                input_path = Path(input_file)
-
-                # If bilingual mode, use format like "video.eng-cmn.srt"
-                if subtitle_source_lang:
-                    output_srt_filename = f"{input_path.stem}.{source_lang}-{target_lang}.srt"
-                    subtitle_type = "Bilingual"
-                else:
-                    output_srt_filename = f"{input_path.stem}.{target_lang}.srt"
-                    subtitle_type = "Target language"
-
-                output_srt_path = Path(output_dir) / output_srt_filename
-
-                # Generate and save SRT
-                srt_content = generate_srt_content(subtitles, merge_short=True)
-                if save_srt_file(srt_content, str(output_srt_path)):
-                    print_success(f"{subtitle_type} subtitle saved: {output_srt_path}")
-                else:
-                    print_error(f"Failed to save {subtitle_type.lower()} subtitle")
-                    return 1
-
-                # Print summary
-                print_header("Subtitle Generation Result")
-                print_success(f"Generated {len(subtitles)} subtitle entries")
-                print_info(f"Subtitle file: {output_srt_path}")
-                if subtitle_source_lang:
-                    print_info(f"Format: Bilingual ({source_lang} + {target_lang})")
-
-            except Exception as e:
-                print_error(f"Error during subtitle generation: {e}")
-                import traceback
-                traceback.print_exc()
+            if not subtitles:
+                print_error("No subtitles generated")
                 return 1
+
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Generate output filename
+            input_path = Path(input_file)
+
+            # If bilingual mode, use format like "video.eng-cmn.srt"
+            if subtitle_source_lang:
+                output_srt_filename = f"{input_path.stem}.{source_lang}-{target_lang}.srt"
+                subtitle_type = "Bilingual"
+            else:
+                output_srt_filename = f"{input_path.stem}.{target_lang}.srt"
+                subtitle_type = "Target language"
+
+            output_srt_path = Path(output_dir) / output_srt_filename
+
+            # Generate and save SRT
+            srt_content = generate_srt_content(subtitles, merge_short=True)
+            if save_srt_file(srt_content, str(output_srt_path)):
+                print_success(f"{subtitle_type} subtitle saved: {output_srt_path}")
+            else:
+                print_error(f"Failed to save {subtitle_type.lower()} subtitle")
+                return 1
+
+            # Print summary
+            print_header("Subtitle Generation Result")
+            print_success(f"Generated {len(subtitles)} subtitle entries")
+            print_info(f"Subtitle file: {output_srt_path}")
+            if subtitle_source_lang:
+                print_info(f"Format: Bilingual ({source_lang} + {target_lang})")
+
+        except Exception as e:
+            print_error(f"Error during subtitle generation: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
 
     # Process audio dubbing with timeline-based translation
     if generate_audio:
@@ -477,46 +564,76 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
         print_info(f"Audio language: {source_lang}")
         print_info(f"Dubbed language: {target_lang}")
 
-        # Create temporary directories
-        with tempfile.TemporaryDirectory() as temp_dir:
-            tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
-            fragments_dir = os.path.join(temp_dir, 'fragments')
+        # Try to load cached timeline first
+        cached_timeline, cached_metadata = load_timeline_cache(cache_dir)
 
-            try:
-                # Step 1: Extract audio from video
-                print_info("Step 1/4: Extracting audio from video...")
-                if not extract_audio(input_file, tmp_audio_path):
+        if cached_timeline and cached_metadata:
+            print_success("Found cached timeline data, skipping segmentation")
+            timeline = cached_timeline
+            metadata = cached_metadata
+            fragments_dir = cached_metadata.get('fragments_dir', '')
+
+            fragment_count = len(timeline)
+            total_duration = metadata.get('total_duration', 0)
+            sample_rate = metadata.get('sample_rate', 16000)
+            print_info(f"Using {fragment_count} cached speech fragments")
+            print_info(f"Total audio duration: {total_duration:.2f}s")
+        else:
+            # Need to segment audio - create persistent cache directory for fragments
+            print_info("No cached timeline found, performing segmentation...")
+            fragments_dir = str(cache_dir / 'fragments')
+            os.makedirs(fragments_dir, exist_ok=True)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+
+                try:
+                    # Step 1: Extract audio from video
+                    print_info("Step 1/4: Extracting audio from video...")
+                    if not extract_audio(input_file, tmp_audio_path):
+                        return 1
+
+                    # Step 2: Segment audio with timeline
+                    print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
+                    timeline, metadata = segment_with_timeline(
+                        audio_path=tmp_audio_path,
+                        output_dir=fragments_dir,
+                        chunk_duration=30.0,
+                        m4t_api_url=api_url,
+                        save_timeline=False
+                    )
+
+                    fragment_count = len(timeline)
+                    total_duration = metadata.get('total_duration', 0)
+                    sample_rate = metadata.get('sample_rate', 16000)
+                    print_success(f"Segmented into {fragment_count} speech fragments")
+                    print_info(f"Total audio duration: {total_duration:.2f}s")
+
+                    # Save timeline to cache with fragments_dir
+                    metadata['fragments_dir'] = fragments_dir
+                    save_timeline_cache(timeline, metadata, cache_dir, fragments_dir)
+                    print_success("Timeline cached for future use")
+
+                except Exception as e:
+                    print_error(f"Error during audio extraction/segmentation: {e}")
+                    import traceback
+                    traceback.print_exc()
                     return 1
 
-                # Step 2: Segment audio with timeline
-                print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
-                timeline, metadata = segment_with_timeline(
-                    audio_path=tmp_audio_path,
-                    output_dir=fragments_dir,
-                    chunk_duration=30.0,
-                    m4t_api_url=api_url,
-                    save_timeline=False
-                )
+        try:
+            # Step 3: Translate each fragment to audio
+            print_info(f"Step 3/4: Translating {fragment_count} fragments to speech...")
 
-                fragment_count = len(timeline)
-                total_duration = metadata.get('total_duration', 0)
-                sample_rate = metadata.get('sample_rate', 16000)
-                print_success(f"Segmented into {fragment_count} speech fragments")
-                print_info(f"Total audio duration: {total_duration:.2f}s")
+            import numpy as np
+            import soundfile as sf
+            import base64
 
-                # Step 3: Translate each fragment to audio
-                print_info(f"Step 3/4: Translating {fragment_count} fragments to speech...")
+            translated_fragments = []
 
-                import numpy as np
-                import soundfile as sf
-                import base64
-
-                translated_fragments = []
-
-                # Use tqdm progress bar
-                with tqdm(total=fragment_count, desc="Translating", unit="fragment",
-                         bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-                         ncols=80) as pbar:
+            # Use tqdm progress bar
+            with tqdm(total=fragment_count, desc="Translating", unit="fragment",
+                     bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                     ncols=80) as pbar:
                     for i, fragment in enumerate(timeline):
                         fragment_path = os.path.join(fragments_dir, fragment['file'])
 
@@ -547,64 +664,64 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                         # Update progress bar
                         pbar.update(1)
 
-                # Step 4: Concatenate fragments with timeline alignment
-                print_info(f"Step 4/4: Concatenating {len(translated_fragments)} translated fragments...")
+            # Step 4: Concatenate fragments with timeline alignment
+            print_info(f"Step 4/4: Concatenating {len(translated_fragments)} translated fragments...")
 
-                if not translated_fragments:
-                    print_error("No audio fragments translated")
-                    return 1
-
-                # Create final audio array with silence gaps
-                final_duration_samples = int(total_duration * sample_rate)
-                final_audio = np.zeros(final_duration_samples, dtype=np.float32)
-
-                for fragment_data in translated_fragments:
-                    start_sample = int(fragment_data['start'] * sample_rate)
-                    audio_data = fragment_data['audio']
-
-                    # Convert to mono if stereo
-                    if len(audio_data.shape) > 1:
-                        audio_data = np.mean(audio_data, axis=1)
-
-                    # Insert audio at correct position
-                    end_sample = start_sample + len(audio_data)
-                    if end_sample <= final_duration_samples:
-                        final_audio[start_sample:end_sample] = audio_data
-                    else:
-                        # Truncate if exceeds total duration
-                        available = final_duration_samples - start_sample
-                        final_audio[start_sample:] = audio_data[:available]
-
-                # Ensure output directory exists
-                os.makedirs(output_dir, exist_ok=True)
-
-                # Generate output filename
-                input_path = Path(input_file)
-                output_filename = f"{input_path.stem}.{target_lang}.wav"
-                output_path = Path(output_dir) / output_filename
-
-                # Save final audio
-                print_info(f"Saving audio to: {output_path}")
-                sf.write(str(output_path), final_audio, sample_rate)
-                print_success(f"Audio saved to: {output_path}")
-
-                # Get file size for result display
-                file_size = os.path.getsize(output_path) / 1024  # KB
-
-                # Print result summary
-                print_header("Audio Dubbing Result")
-                print_success("Audio dubbing completed!")
-                print_success(f"Translated {len(translated_fragments)} speech fragments")
-                print_info(f"Output file: {output_path}")
-                print_info(f"File size: {file_size:.1f} KB")
-                print_info(f"Sample rate: {sample_rate} Hz")
-                print_info(f"Duration: {total_duration:.2f} seconds")
-
-            except Exception as e:
-                print_error(f"Error during audio dubbing: {e}")
-                import traceback
-                traceback.print_exc()
+            if not translated_fragments:
+                print_error("No audio fragments translated")
                 return 1
+
+            # Create final audio array with silence gaps
+            final_duration_samples = int(total_duration * sample_rate)
+            final_audio = np.zeros(final_duration_samples, dtype=np.float32)
+
+            for fragment_data in translated_fragments:
+                start_sample = int(fragment_data['start'] * sample_rate)
+                audio_data = fragment_data['audio']
+
+                # Convert to mono if stereo
+                if len(audio_data.shape) > 1:
+                    audio_data = np.mean(audio_data, axis=1)
+
+                # Insert audio at correct position
+                end_sample = start_sample + len(audio_data)
+                if end_sample <= final_duration_samples:
+                    final_audio[start_sample:end_sample] = audio_data
+                else:
+                    # Truncate if exceeds total duration
+                    available = final_duration_samples - start_sample
+                    final_audio[start_sample:] = audio_data[:available]
+
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Generate output filename
+            input_path = Path(input_file)
+            output_filename = f"{input_path.stem}.{target_lang}.wav"
+            output_path = Path(output_dir) / output_filename
+
+            # Save final audio
+            print_info(f"Saving audio to: {output_path}")
+            sf.write(str(output_path), final_audio, sample_rate)
+            print_success(f"Audio saved to: {output_path}")
+
+            # Get file size for result display
+            file_size = os.path.getsize(output_path) / 1024  # KB
+
+            # Print result summary
+            print_header("Audio Dubbing Result")
+            print_success("Audio dubbing completed!")
+            print_success(f"Translated {len(translated_fragments)} speech fragments")
+            print_info(f"Output file: {output_path}")
+            print_info(f"File size: {file_size:.1f} KB")
+            print_info(f"Sample rate: {sample_rate} Hz")
+            print_info(f"Duration: {total_duration:.2f} seconds")
+
+        except Exception as e:
+            print_error(f"Error during audio dubbing: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
 
     return 0
 
