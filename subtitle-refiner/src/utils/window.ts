@@ -94,17 +94,16 @@ export function formatWindowForLLM(window: SubtitleWindow): string {
   const lines: string[] = [];
 
   for (const entry of window.entries) {
-    const status = entry.state === 'finished' ? '[DONE]' : '[TODO]';
     const textLines = entry.text.split('\n');
 
     if (textLines.length === 2) {
       // Bilingual
-      lines.push(`${status} Subtitle #${entry.index}:`);
+      lines.push(`Subtitle #${entry.index}:`);
       lines.push(`  Target: ${textLines[0]}`);
       lines.push(`  Source: ${textLines[1]}`);
     } else {
       // Monolingual
-      lines.push(`${status} Subtitle #${entry.index}: ${entry.text}`);
+      lines.push(`Subtitle #${entry.index}: ${entry.text}`);
     }
     lines.push('');
   }

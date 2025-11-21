@@ -30,10 +30,14 @@ export class SubtitleStateManager {
 
   /**
    * Mark subtitle as finished without changes
+   * Returns true only if it was previously unfinished
    */
   markFine(index: number): boolean {
     const sub = this.get(index);
     if (!sub) return false;
+
+    // Only count as progress if it was previously unfinished
+    if (sub.state === 'finished') return false;
 
     sub.state = 'finished';
     return true;
@@ -41,11 +45,13 @@ export class SubtitleStateManager {
 
   /**
    * Mark subtitle as finished with refined text
+   * Returns true only if it was previously unfinished or text changed
    */
   markRefined(index: number, srcText: string, tarText: string): boolean {
     const sub = this.get(index);
     if (!sub) return false;
 
+    // Always allow re-refinement (improved translation)
     sub.state = 'finished';
     sub.refined = { srcText, tarText };
     sub.text = `${tarText}\n${srcText}`;

@@ -15,12 +15,11 @@ Focus on:
 - Maintaining appropriate subtitle length
 
 Guidelines:
-- [DONE] subtitles are already processed, shown for context only
-- [TODO] subtitles need your review
-- You MUST call a function for EVERY [TODO] subtitle
+- Review subtitles and call functions for those that need attention
 - For bilingual subtitles: tar_text is target language (translation), src_text is source language (original)
+- You can refine subtitles multiple times if you see room for improvement
 
-Call the functions for each subtitle you review.`;
+Make function calls for the subtitles you want to mark or refine.`;
 
 export const RETRY_PROMPT = `You didn't call any functions in your previous response.
 
@@ -30,7 +29,7 @@ Examples:
 - If subtitle #5 is fine: Call this_is_fine(5)
 - If subtitle #6 needs changes: Call this_should_be(6, "improved target", "improved source")
 
-Please review the [TODO] subtitles and call the appropriate functions now.`;
+Please review the subtitles and call the appropriate functions now.`;
 
 export function buildUserPrompt(
   windowContent: string,
@@ -38,7 +37,7 @@ export function buildUserPrompt(
 ): string {
   let prompt = 'Here are the subtitles to review:\n\n';
   prompt += windowContent;
-  prompt += '\n\nPlease review all [TODO] subtitles and call the appropriate functions.';
+  prompt += '\n\nPlease review the subtitles and call the appropriate functions.';
 
   if (isRetry) {
     prompt += '\n\n' + RETRY_PROMPT;

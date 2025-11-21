@@ -158,7 +158,12 @@ export class SubtitleRefiner {
       if (success) {
         logger.debug(`✓ Marked #${id} as fine`);
       } else {
-        logger.warn(`Failed to mark #${id} (not found)`);
+        const sub = stateManager.get(id);
+        if (!sub) {
+          logger.warn(`Failed to mark #${id} (not found)`);
+        } else if (sub.state === 'finished') {
+          logger.debug(`⊚ #${id} already finished (duplicate call)`);
+        }
       }
       return success;
     } else if (call.name === 'this_should_be') {
