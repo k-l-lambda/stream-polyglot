@@ -180,6 +180,46 @@ Replace audio with translated speech:
 python -m main video.mp4 --lang eng:jpn --audio
 ```
 
+### Split Audio into Vocals and Accompaniment
+
+**NEW FEATURE**: Use `--split` to separate vocals from background music before timeline segmentation:
+
+```bash
+# Split audio before generating subtitles
+python -m main video.mp4 --lang eng:cmn --subtitle --split
+
+# Split audio before generating audio dubbing
+python -m main video.mp4 --lang eng:jpn --audio --split
+
+# Works with both subtitle and audio generation
+python -m main video.mp4 --lang eng:cmn --subtitle --audio --split
+```
+
+**How it works:**
+1. Extracts audio from video using FFmpeg
+2. Calls m4t `/v1/audio-split` API to separate vocals from accompaniment (using Spleeter)
+3. Saves both streams to cache directory (`.stream-polyglot-cache/[video_name]/split/`)
+   - `vocals.wav`: Clean human voice/speech
+   - `accompaniment.wav`: Background music and other sounds
+4. Uses vocals audio for timeline segmentation (better speech detection accuracy)
+5. Generates subtitles/dubbing based on the vocals stream
+
+**Benefits:**
+- **Better speech detection**: Removing background music improves VAD (Voice Activity Detection) accuracy
+- **Cleaner segmentation**: Speech fragments are more precisely extracted without music interference
+- **Cached for reuse**: Split audio is saved for future subtitle/audio generation
+- **Optional feature**: Only used when `--split` flag is set (normal processing without it)
+
+**Use cases:**
+- Videos with strong background music that interferes with speech detection
+- Music videos with vocals that need translation
+- Movies with loud soundtracks
+- Presentations with background music
+
+**Requirements:**
+- m4t server must have Spleeter installed (`pip install spleeter`)
+- Processing time increases by ~0.6-0.7x real-time for audio splitting step
+
 ### Generate Voice-Cloned Audio from Bilingual Subtitles
 
 **NEW FEATURE**: Generate voice-cloned audio using bilingual SRT subtitles with GPT-SoVITS voice cloning:

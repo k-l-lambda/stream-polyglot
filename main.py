@@ -318,6 +318,67 @@ def save_base64_audio_to_file(audio_base64, output_path):
         return False
 
 
+def audio_split(audio_path, api_url, verbose=True):
+    """
+    Call m4t API for audio splitting (vocals + accompaniment)
+
+    Args:
+        audio_path: Path to audio file
+        api_url: m4t API server URL
+        verbose: Print info messages
+
+    Returns:
+        Tuple of (vocals_bytes, accompaniment_bytes, sample_rate) or (None, None, None) on error
+    """
+    try:
+        if verbose:
+            print_info(f"Splitting audio into vocals and accompaniment...")
+
+        # Read audio file
+        with open(audio_path, 'rb') as f:
+            audio_data = f.read()
+
+        # Prepare multipart form data
+        files = {
+            'audio': ('audio.wav', audio_data, 'audio/wav')
+        }
+
+        # Call m4t audio-split API
+        response = requests.post(
+            f"{api_url}/v1/audio-split",
+            files=files,
+            timeout=300  # 5 minutes timeout for long audio
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+
+            # Decode base64 audio streams
+            import base64
+            vocals_base64 = result.get('vocals_audio_base64', '')
+            accompaniment_base64 = result.get('accompaniment_audio_base64', '')
+            sample_rate = result.get('sample_rate', 16000)
+
+            vocals_bytes = base64.b64decode(vocals_base64)
+            accompaniment_bytes = base64.b64decode(accompaniment_base64)
+
+            if verbose:
+                print_success(f"Audio split completed (sample rate: {sample_rate} Hz)")
+
+            return vocals_bytes, accompaniment_bytes, sample_rate
+        else:
+            print_error(f"Audio split API error: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None, None, None
+
+    except requests.exceptions.Timeout:
+        print_error("Request timeout during audio split. Audio file might be too long.")
+        return None, None, None
+    except Exception as e:
+        print_error(f"Error calling audio-split API: {e}")
+        return None, None, None
+
+
 def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, prompt_language, api_url, seed=-1, verbose=True):
     """
     Call m4t API for voice cloning
@@ -436,7 +497,7 @@ def save_timeline_cache(timeline, metadata, cache_dir, fragments_dir):
         return False
 
 
-def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url, speaker_id=0):
+def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url, speaker_id=0, split_audio=False):
     """Process video file for translation"""
 
     print_header("Stream-Polyglot Video Translation")
@@ -460,6 +521,8 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
         print_info(f"Subtitle source language: {subtitle_source_lang}")
     print_info(f"Generate subtitles: {'Yes' if generate_subtitle else 'No'}")
     print_info(f"Generate audio dubbing: {'Yes' if generate_audio else 'No'}")
+    if split_audio:
+        print_info(f"Audio splitting: Yes (vocals for segmentation)")
 
     if output_dir:
         print_info(f"Output directory: {output_dir}")
@@ -517,10 +580,38 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     if not extract_audio(input_file, tmp_audio_path):
                         return 1
 
+                    # Step 1.5: Split audio if --split flag is set
+                    audio_for_segmentation = tmp_audio_path
+                    if split_audio:
+                        print_info("Step 1.5/4: Splitting audio into vocals and accompaniment...")
+                        vocals_bytes, accompaniment_bytes, sr = audio_split(tmp_audio_path, api_url, verbose=True)
+
+                        if vocals_bytes and accompaniment_bytes:
+                            # Save vocals and accompaniment to cache directory
+                            split_cache_dir = cache_dir / 'split'
+                            os.makedirs(split_cache_dir, exist_ok=True)
+
+                            vocals_cache_path = split_cache_dir / 'vocals.wav'
+                            accompaniment_cache_path = split_cache_dir / 'accompaniment.wav'
+
+                            with open(vocals_cache_path, 'wb') as f:
+                                f.write(vocals_bytes)
+                            with open(accompaniment_cache_path, 'wb') as f:
+                                f.write(accompaniment_bytes)
+
+                            print_success(f"Vocals saved to: {vocals_cache_path}")
+                            print_success(f"Accompaniment saved to: {accompaniment_cache_path}")
+
+                            # Use vocals audio for segmentation
+                            audio_for_segmentation = str(vocals_cache_path)
+                            print_info("Using vocals audio for timeline segmentation")
+                        else:
+                            print_warning("Audio split failed, using original audio for segmentation")
+
                     # Step 2: Segment audio with timeline
                     print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
                     timeline, metadata = segment_with_timeline(
-                        audio_path=tmp_audio_path,
+                        audio_path=audio_for_segmentation,
                         output_dir=fragments_dir,
                         chunk_duration=30.0,
                         m4t_api_url=api_url,
@@ -534,6 +625,8 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
 
                     # Save timeline to cache with fragments_dir
                     metadata['fragments_dir'] = fragments_dir
+                    if split_audio:
+                        metadata['split_audio'] = True
                     save_timeline_cache(timeline, metadata, cache_dir, fragments_dir)
                     print_success("Timeline cached for future use")
 
@@ -682,10 +775,38 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     if not extract_audio(input_file, tmp_audio_path):
                         return 1
 
+                    # Step 1.5: Split audio if --split flag is set
+                    audio_for_segmentation = tmp_audio_path
+                    if split_audio:
+                        print_info("Step 1.5/4: Splitting audio into vocals and accompaniment...")
+                        vocals_bytes, accompaniment_bytes, sr = audio_split(tmp_audio_path, api_url, verbose=True)
+
+                        if vocals_bytes and accompaniment_bytes:
+                            # Save vocals and accompaniment to cache directory
+                            split_cache_dir = cache_dir / 'split'
+                            os.makedirs(split_cache_dir, exist_ok=True)
+
+                            vocals_cache_path = split_cache_dir / 'vocals.wav'
+                            accompaniment_cache_path = split_cache_dir / 'accompaniment.wav'
+
+                            with open(vocals_cache_path, 'wb') as f:
+                                f.write(vocals_bytes)
+                            with open(accompaniment_cache_path, 'wb') as f:
+                                f.write(accompaniment_bytes)
+
+                            print_success(f"Vocals saved to: {vocals_cache_path}")
+                            print_success(f"Accompaniment saved to: {accompaniment_cache_path}")
+
+                            # Use vocals audio for segmentation
+                            audio_for_segmentation = str(vocals_cache_path)
+                            print_info("Using vocals audio for timeline segmentation")
+                        else:
+                            print_warning("Audio split failed, using original audio for segmentation")
+
                     # Step 2: Segment audio with timeline
                     print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
                     timeline, metadata = segment_with_timeline(
-                        audio_path=tmp_audio_path,
+                        audio_path=audio_for_segmentation,
                         output_dir=fragments_dir,
                         chunk_duration=30.0,
                         m4t_api_url=api_url,
@@ -700,6 +821,8 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
 
                     # Save timeline to cache with fragments_dir
                     metadata['fragments_dir'] = fragments_dir
+                    if split_audio:
+                        metadata['split_audio'] = True
                     save_timeline_cache(timeline, metadata, cache_dir, fragments_dir)
                     print_success("Timeline cached for future use")
 
@@ -1244,6 +1367,13 @@ See http://localhost:8000/languages for full list of supported languages.
         help='Source language for subtitle generation (default: same as --lang source language)'
     )
 
+    # Audio split option (split before segmentation)
+    parser.add_argument(
+        '--split',
+        action='store_true',
+        help='Split audio into vocals and accompaniment before timeline segmentation (use vocals for segmentation)'
+    )
+
     # Optional speaker ID for audio generation
     parser.add_argument(
         '--speaker-id',
@@ -1346,7 +1476,8 @@ See http://localhost:8000/languages for full list of supported languages.
                 args.subtitle_source_lang,
                 args.output,
                 args.api_url,
-                args.speaker_id
+                args.speaker_id,
+                args.split
             )
         except KeyboardInterrupt:
             print_error("\n\nInterrupted by user")
