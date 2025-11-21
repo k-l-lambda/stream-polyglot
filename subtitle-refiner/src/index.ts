@@ -10,6 +10,7 @@ import { createProvider } from './refiners/providers/factory.js';
 import { logger } from './utils/logger.js';
 import { RefinerConfig } from './types.js';
 import { detectLanguagesFromFilename } from './utils/language-detector.js';
+import { checkpointExists, getCheckpointInfo } from './utils/checkpoint.js';
 
 // Load environment variables
 dotenv.config();
@@ -38,6 +39,12 @@ program
     'Maximum retries when LLM makes no progress',
     '3'
   )
+  .option(
+    '--checkpoint-interval <number>',
+    'Save checkpoint every N rounds (0 = disabled)',
+    '5'
+  )
+  .option('--resume', 'Resume from last checkpoint if available', false)
   .option('--dry-run', 'Preview windows without calling LLM', false)
   .option('--verbose', 'Show detailed processing logs', false)
   .action(async (inputFile: string, options) => {
@@ -90,6 +97,15 @@ program
         logger.info(`Language order: ${languageInfo.firstLangName} / ${languageInfo.secondLangName}`);
       }
 
+      // Check for checkpoint
+      if (options.resume && checkpointExists(inputPath)) {
+        const checkpointInfo = getCheckpointInfo(inputPath);
+        if (checkpointInfo) {
+          logger.info('Found checkpoint:');
+          logger.info(checkpointInfo);
+        }
+      }
+
       logger.separator();
 
       // Create refiner configuration
@@ -100,6 +116,8 @@ program
         dryRun: options.dryRun,
         verbose: options.verbose,
         maxRetries: parseInt(options.maxRetries, 10),
+        checkpointInterval: parseInt(options.checkpointInterval, 10),
+        resume: options.resume,
       };
 
       // Create LLM provider (skip in dry-run mode)
@@ -122,7 +140,7 @@ program
       }
 
       // Perform refinement
-      const refined = await refiner.refine(subtitles, languageInfo);
+      const refined = await refiner.refine(subtitles, languageInfo, inputPath);
 
       // Write output file (if not dry run)
       if (!options.dryRun) {

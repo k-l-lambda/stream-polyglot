@@ -8,6 +8,7 @@ LLM-powered SRT subtitle refinement with function calling. Uses OpenAI GPT-4 (or
 - **Centered Window**: First unfinished subtitle stays at window center for optimal context
 - **State Tracking**: Real-time progress tracking with finished/unfinished states
 - **Retry Mechanism**: Automatic retry prompts when LLM makes no progress
+- **Checkpoint System**: Automatic progress saving and resume support for long refinement jobs
 - **Bilingual Support**: Refines both target and source language lines
 - **OpenAI Compatible**: Works with any OpenAI-compatible API
 
@@ -49,6 +50,61 @@ npm run dev -- input.srt -w 8 --max-retries 5
 
 # Verbose logging
 npm run dev -- input.srt --verbose
+
+# With checkpoint system (auto-save every 5 rounds)
+npm run dev -- input.srt --checkpoint-interval 5
+
+# Resume from checkpoint
+npm run dev -- input.srt --resume --checkpoint-interval 5
+```
+
+## Checkpoint System
+
+For long refinement jobs (100+ subtitles), the checkpoint system automatically saves progress:
+
+### Features
+
+- **Automatic Saving**: Saves checkpoint every N rounds (default: 5)
+- **Resume Support**: Continue from last checkpoint with `--resume` flag
+- **Error Recovery**: Saves checkpoint before exit on errors
+- **Auto-Cleanup**: Deletes checkpoint on successful completion
+
+### Usage
+
+```bash
+# Enable checkpoints (save every 5 rounds)
+npm run dev -- large-file.srt --checkpoint-interval 5
+
+# If process crashes or is interrupted
+# Resume from last checkpoint
+npm run dev -- large-file.srt --resume --checkpoint-interval 5
+```
+
+### Checkpoint File
+
+- **Location**: Same directory as input file
+- **Filename**: `input.checkpoint.json`
+- **Contents**: Subtitle states, progress stats, window position
+- **Size**: ~2-5x input file size (includes all metadata)
+
+### Example
+
+```bash
+# Start refinement
+$ npm run dev -- movie.eng-cmn.srt --checkpoint-interval 10
+
+# ... processing...
+# ℹ Checkpoint saved (round 10)
+# ℹ Checkpoint saved (round 20)
+# ^C (interrupted at round 25)
+
+# Resume later
+$ npm run dev -- movie.eng-cmn.srt --resume --checkpoint-interval 10
+# ℹ Found checkpoint:
+# Checkpoint from 2025-11-21 15:30:00
+# Progress: 45/128 (35.2%)
+# Rounds: 25, LLM calls: 27
+# ✓ Resuming from checkpoint...
 ```
 
 ## How It Works

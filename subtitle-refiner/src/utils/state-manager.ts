@@ -32,6 +32,13 @@ export class SubtitleStateManager {
   }
 
   /**
+   * Alias for getAll() - used by checkpoint system
+   */
+  getAllWithState(): SubtitleWithState[] {
+    return this.subtitles;
+  }
+
+  /**
    * Get subtitle by index (1-based)
    */
   get(index: number): SubtitleWithState | undefined {

@@ -3,6 +3,13 @@ import { SubtitleStateManager } from '../utils/state-manager.js';
 import { createCenteredWindow, formatWindowDisplay } from '../utils/window.js';
 import { logger } from '../utils/logger.js';
 import { buildSystemPrompt } from '../prompts/default-prompts.js';
+import {
+  saveCheckpoint,
+  loadCheckpoint,
+  deleteCheckpoint,
+  checkpointExists,
+  getCheckpointInfo,
+} from '../utils/checkpoint.js';
 
 export class SubtitleRefiner {
   private provider: LLMProvider;
@@ -30,7 +37,11 @@ export class SubtitleRefiner {
   /**
    * Refine all subtitles using centered window strategy with function calling
    */
-  async refine(subtitles: Subtitle[], languageInfo: LanguageInfo | null = null): Promise<Subtitle[]> {
+  async refine(
+    subtitles: Subtitle[],
+    languageInfo: LanguageInfo | null = null,
+    inputFile: string = ''
+  ): Promise<Subtitle[]> {
     if (subtitles.length === 0) {
       logger.warn('No subtitles to refine');
       return subtitles;
@@ -40,23 +51,56 @@ export class SubtitleRefiner {
     logger.info(`Provider: ${this.provider.getName()}`);
     logger.info(`Window size: ${this.config.windowSize}`);
     logger.info(`Total subtitles: ${subtitles.length}`);
+
+    // Check for checkpoint if resume is enabled
+    let stateManager: SubtitleStateManager;
+    let startRound = 0;
+    let windowStartPosition: number | null = null;
+
+    if (this.config.resume && inputFile && checkpointExists(inputFile)) {
+      const checkpoint = loadCheckpoint(inputFile);
+
+      if (checkpoint) {
+        logger.info('Resuming from checkpoint...');
+        logger.separator();
+
+        // Restore state from checkpoint
+        stateManager = new SubtitleStateManager(checkpoint.subtitles, checkpoint.languageInfo);
+        // Restore stats, setting noProgressRounds to 0 (start fresh on resume)
+        this.stats = {
+          ...checkpoint.progress,
+          noProgressRounds: 0,
+        };
+        startRound = checkpoint.progress.rounds;
+        windowStartPosition = checkpoint.windowStartPosition;
+
+        logger.info(`Resumed at round ${startRound + 1}`);
+        logger.info(
+          `Progress: ${this.stats.finishedSubtitles}/${this.stats.totalSubtitles} finished`
+        );
+      } else {
+        // Checkpoint load failed, start fresh
+        stateManager = new SubtitleStateManager(subtitles, languageInfo);
+        this.stats.totalSubtitles = subtitles.length;
+      }
+    } else {
+      // No checkpoint or resume disabled, start fresh
+      stateManager = new SubtitleStateManager(subtitles, languageInfo);
+      this.stats.totalSubtitles = subtitles.length;
+    }
+
     logger.separator();
-
-    // Build system prompt with language info
-    const systemPrompt = buildSystemPrompt(languageInfo);
-
-    // Initialize state manager with language info
-    const stateManager = new SubtitleStateManager(subtitles, languageInfo);
-    this.stats.totalSubtitles = subtitles.length;
 
     if (this.config.dryRun) {
       return this.dryRun(stateManager);
     }
 
+    // Build system prompt with language info
+    const systemPrompt = buildSystemPrompt(languageInfo);
+
     // Main processing loop
-    let round = 0;
+    let round = startRound;
     let previousFirstUnfinished = -1;
-    let windowStartPosition: number | null = null; // Independent window position
 
     while (!stateManager.isAllFinished()) {
       round++;
@@ -158,6 +202,22 @@ export class SubtitleRefiner {
         // Update previous position with current state (after all processing)
         previousFirstUnfinished = stateManager.findFirstUnfinished();
 
+        // Save checkpoint if enabled and at interval
+        if (
+          this.config.checkpointInterval > 0 &&
+          inputFile &&
+          round % this.config.checkpointInterval === 0
+        ) {
+          saveCheckpoint(
+            inputFile,
+            languageInfo,
+            stateManager.getAllWithState(),
+            this.stats,
+            windowStartPosition
+          );
+          logger.info(`Checkpoint saved (round ${round})`);
+        }
+
         // Brief delay to avoid rate limits
         await this.sleep(500);
       } catch (error) {
@@ -165,12 +225,29 @@ export class SubtitleRefiner {
         if (error instanceof Error) {
           logger.error(error.message);
         }
+        // Save checkpoint on error
+        if (this.config.checkpointInterval > 0 && inputFile) {
+          saveCheckpoint(
+            inputFile,
+            languageInfo,
+            stateManager.getAllWithState(),
+            this.stats,
+            windowStartPosition
+          );
+          logger.info('Checkpoint saved before exit');
+        }
         throw error;
       }
     }
 
     // Final summary
     this.printSummary();
+
+    // Delete checkpoint on successful completion
+    if (inputFile) {
+      deleteCheckpoint(inputFile);
+      logger.debug('Checkpoint cleaned up');
+    }
 
     return stateManager.export();
   }

@@ -82,6 +82,8 @@ export interface RefinerConfig {
   dryRun: boolean;
   verbose: boolean;
   maxRetries: number;
+  checkpointInterval: number; // Save checkpoint every N rounds (0 = disabled)
+  resume: boolean; // Resume from checkpoint if available
 }
 
 /**
