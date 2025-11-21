@@ -37,7 +37,10 @@ export function formatTimestamp(seconds: number): string {
  */
 export function parseSRT(content: string): Subtitle[] {
   const subtitles: Subtitle[] = [];
-  const blocks = content.trim().split(/\n\s*\n/);
+
+  // Normalize line endings to \n (handle both \r\n and \n)
+  const normalizedContent = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const blocks = normalizedContent.trim().split(/\n\s*\n/);
 
   for (const block of blocks) {
     const lines = block.trim().split('\n');
