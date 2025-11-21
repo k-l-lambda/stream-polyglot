@@ -198,14 +198,26 @@ python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt
 
 # Option 3: Infer language from SRT filename
 python -m main --trans-voice video.eng-cmn.srt
+
+# Option 4: Use fixed seed for reproducible voice cloning
+python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt --seed 42
 ```
+
+**Random Seed for Reproducibility:**
+- `--seed` parameter controls the randomness in voice generation
+- **Default (no --seed)**: Generates one random seed at the start and uses it for ALL segments in that generation
+  - This ensures consistency across all voice cloned segments in a single run
+  - Different runs will produce different (but internally consistent) results
+- **Fixed seed (--seed 42)**: Uses the same seed across runs for fully reproducible results
+  - Same input + same seed = identical output audio
+  - Useful for A/B testing, debugging, or when consistent output is required
 
 **How it works:**
 1. Reads bilingual SRT file (target language + source language)
 2. Checks for cached timeline; if not found, automatically extracts audio and segments it
 3. Matches subtitle timing with cached audio fragments
 4. Uses cached fragment audio as reference for voice cloning
-5. Generates target language speech with cloned voice characteristics
+5. Generates target language speech with cloned voice characteristics (using the same seed for all segments)
 6. Concatenates all segments into final audio track
 
 **Benefits:**
@@ -214,6 +226,7 @@ python -m main --trans-voice video.eng-cmn.srt
 - Reuses cached timeline data for fast processing
 - Automatic segmentation if cache doesn't exist
 - Perfect for dubbing videos while maintaining voice identity
+- Consistent voice characteristics across all segments (same seed used for all cloning operations)
 
 ### Generate Both Subtitles and Audio
 

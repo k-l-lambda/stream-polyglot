@@ -318,7 +318,7 @@ def save_base64_audio_to_file(audio_base64, output_path):
         return False
 
 
-def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, prompt_language, api_url, verbose=True):
+def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, prompt_language, api_url, seed=-1, verbose=True):
     """
     Call m4t API for voice cloning
 
@@ -329,6 +329,7 @@ def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, pr
         prompt_text: Transcription of reference audio (source language)
         prompt_language: Language code for reference audio
         api_url: m4t API server URL
+        seed: Random seed for reproducibility (-1 for random)
         verbose: Print info messages
 
     Returns:
@@ -350,7 +351,8 @@ def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, pr
             'text': text,
             'text_language': text_language,
             'prompt_text': prompt_text,
-            'prompt_language': prompt_language
+            'prompt_language': prompt_language,
+            'seed': str(seed)
         }
 
         # Call m4t voice-clone API
@@ -813,7 +815,7 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
     return 0
 
 
-def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_dir, api_url):
+def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_dir, api_url, seed=None):
     """
     Process voice cloning translation from bilingual SRT file
 
@@ -824,10 +826,20 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         target_lang: Target language code
         output_dir: Output directory for generated audio
         api_url: m4t API server URL
+        seed: Random seed for reproducibility (None for random-but-fixed, >=0 for specific seed)
 
     Returns:
         Exit code (0 for success, 1 for error)
     """
+    import random
+
+    # Generate random seed once for this generation process if not specified
+    if seed is None:
+        seed = random.randint(0, 1000000)
+        print_info(f"Generated random seed: {seed}")
+    else:
+        print_info(f"Using fixed seed: {seed}")
+
     print_header("Stream-Polyglot Voice Cloning from Subtitle")
 
     # Check SRT file exists
@@ -1018,7 +1030,7 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
                  ncols=80) as pbar:
                 for seg in matched_segments:
-                    # Call voice-clone API
+                    # Call voice-clone API with the same seed for all segments
                     audio_bytes = voice_clone_translation(
                         ref_audio_path=seg['ref_audio_path'],
                         text=seg['target_text'],
@@ -1026,6 +1038,7 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
                         prompt_text=seg['source_text'],
                         prompt_language=source_lang,
                         api_url=api_url,
+                        seed=seed,
                         verbose=False
                     )
 
@@ -1060,7 +1073,13 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         if total_duration == 0 and cloned_segments:
             total_duration = max(seg['end'] for seg in cloned_segments)
 
-        sample_rate = cached_metadata.get('sample_rate', 16000)
+        # Use the sample rate from cloned audio (usually 32000 for GPT-SoVITS)
+        # instead of cached metadata (16000 for original audio)
+        if cloned_segments:
+            sample_rate = cloned_segments[0]['sample_rate']
+            print_info(f"Using cloned audio sample rate: {sample_rate} Hz")
+        else:
+            sample_rate = cached_metadata.get('sample_rate', 16000)
 
         # Create final audio array with silence gaps
         final_duration_samples = int(total_duration * sample_rate)
@@ -1069,6 +1088,7 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         for seg_data in cloned_segments:
             start_sample = int(seg_data['start'] * sample_rate)
             audio_data = seg_data['audio']
+            seg_sample_rate = seg_data['sample_rate']
 
             # Convert to mono if stereo
             if len(audio_data.shape) > 1:
@@ -1077,6 +1097,13 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
             # Ensure float32
             if audio_data.dtype != np.float32:
                 audio_data = audio_data.astype(np.float32)
+
+            # Resample if segment sample rate doesn't match target
+            if seg_sample_rate != sample_rate:
+                from scipy import signal
+                # Calculate resampling ratio
+                num_samples = int(len(audio_data) * sample_rate / seg_sample_rate)
+                audio_data = signal.resample(audio_data, num_samples)
 
             # Insert audio at correct position
             end_sample = start_sample + len(audio_data)
@@ -1154,6 +1181,9 @@ Examples:
   # Generate voice-cloned audio from bilingual SRT file (infer from filename)
   python -m main --trans-voice video.eng-cmn.srt
 
+  # Generate voice-cloned audio with fixed seed for reproducibility
+  python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt --seed 42
+
   # Specify output directory
   python -m main video.mp4 --lang jpn:eng --subtitle --output ./translated/
 
@@ -1223,6 +1253,15 @@ See http://localhost:8000/languages for full list of supported languages.
         help='Speaker voice ID for audio generation (0-199, default: 0)'
     )
 
+    # Random seed for voice cloning
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        metavar='SEED',
+        help='Random seed for voice cloning reproducibility (default: random but fixed across one generation process, 0-1000000 for specific seed)'
+    )
+
     # Optional output directory
     parser.add_argument(
         '--output',
@@ -1266,7 +1305,8 @@ See http://localhost:8000/languages for full list of supported languages.
                 source_lang=source_lang,
                 target_lang=target_lang,
                 output_dir=args.output,
-                api_url=args.api_url
+                api_url=args.api_url,
+                seed=args.seed
             )
         except KeyboardInterrupt:
             print_error("\n\nInterrupted by user")
