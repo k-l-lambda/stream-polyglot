@@ -13,6 +13,7 @@ import os
 import requests
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -379,6 +380,42 @@ def audio_split(audio_path, api_url, verbose=True):
         return None, None, None
 
 
+def audio_split_background(audio_path, api_url, cache_dir):
+    """
+    Run audio splitting in background thread and save results when ready
+
+    Args:
+        audio_path: Path to audio file
+        api_url: m4t API server URL
+        cache_dir: Cache directory to save split audio
+    """
+    try:
+        print_info("Starting audio split in background...")
+
+        vocals_bytes, accompaniment_bytes, sr = audio_split(audio_path, api_url, verbose=False)
+
+        if vocals_bytes and accompaniment_bytes:
+            # Save vocals and accompaniment to cache directory
+            split_cache_dir = cache_dir / 'split'
+            os.makedirs(split_cache_dir, exist_ok=True)
+
+            vocals_cache_path = split_cache_dir / 'vocals.wav'
+            accompaniment_cache_path = split_cache_dir / 'accompaniment.wav'
+
+            with open(vocals_cache_path, 'wb') as f:
+                f.write(vocals_bytes)
+            with open(accompaniment_cache_path, 'wb') as f:
+                f.write(accompaniment_bytes)
+
+            print_success(f"✓ Audio split completed")
+            print_success(f"  Vocals: {vocals_cache_path}")
+            print_success(f"  Accompaniment: {accompaniment_cache_path}")
+        else:
+            print_warning("Audio split failed in background")
+    except Exception as e:
+        print_error(f"Background audio split error: {e}")
+
+
 def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, prompt_language, api_url, seed=-1, verbose=True):
     """
     Call m4t API for voice cloning
@@ -580,33 +617,17 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     if not extract_audio(input_file, tmp_audio_path):
                         return 1
 
-                    # Step 1.5: Split audio if --split flag is set
+                    # Step 1.5: Split audio if --split flag is set (run in background)
                     audio_for_segmentation = tmp_audio_path
                     if split_audio:
-                        print_info("Step 1.5/4: Splitting audio into vocals and accompaniment...")
-                        vocals_bytes, accompaniment_bytes, sr = audio_split(tmp_audio_path, api_url, verbose=True)
-
-                        if vocals_bytes and accompaniment_bytes:
-                            # Save vocals and accompaniment to cache directory
-                            split_cache_dir = cache_dir / 'split'
-                            os.makedirs(split_cache_dir, exist_ok=True)
-
-                            vocals_cache_path = split_cache_dir / 'vocals.wav'
-                            accompaniment_cache_path = split_cache_dir / 'accompaniment.wav'
-
-                            with open(vocals_cache_path, 'wb') as f:
-                                f.write(vocals_bytes)
-                            with open(accompaniment_cache_path, 'wb') as f:
-                                f.write(accompaniment_bytes)
-
-                            print_success(f"Vocals saved to: {vocals_cache_path}")
-                            print_success(f"Accompaniment saved to: {accompaniment_cache_path}")
-
-                            # Use vocals audio for segmentation
-                            audio_for_segmentation = str(vocals_cache_path)
-                            print_info("Using vocals audio for timeline segmentation")
-                        else:
-                            print_warning("Audio split failed, using original audio for segmentation")
+                        # Start audio splitting in background thread
+                        split_thread = threading.Thread(
+                            target=audio_split_background,
+                            args=(tmp_audio_path, api_url, cache_dir),
+                            daemon=True
+                        )
+                        split_thread.start()
+                        print_info("Audio splitting started in background (processing continues...)")
 
                     # Step 2: Segment audio with timeline
                     print_info("Step 2/4: Segmenting audio with VAD-based timeline...")
@@ -775,33 +796,17 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     if not extract_audio(input_file, tmp_audio_path):
                         return 1
 
-                    # Step 1.5: Split audio if --split flag is set
+                    # Step 1.5: Split audio if --split flag is set (run in background)
                     audio_for_segmentation = tmp_audio_path
                     if split_audio:
-                        print_info("Step 1.5/4: Splitting audio into vocals and accompaniment...")
-                        vocals_bytes, accompaniment_bytes, sr = audio_split(tmp_audio_path, api_url, verbose=True)
-
-                        if vocals_bytes and accompaniment_bytes:
-                            # Save vocals and accompaniment to cache directory
-                            split_cache_dir = cache_dir / 'split'
-                            os.makedirs(split_cache_dir, exist_ok=True)
-
-                            vocals_cache_path = split_cache_dir / 'vocals.wav'
-                            accompaniment_cache_path = split_cache_dir / 'accompaniment.wav'
-
-                            with open(vocals_cache_path, 'wb') as f:
-                                f.write(vocals_bytes)
-                            with open(accompaniment_cache_path, 'wb') as f:
-                                f.write(accompaniment_bytes)
-
-                            print_success(f"Vocals saved to: {vocals_cache_path}")
-                            print_success(f"Accompaniment saved to: {accompaniment_cache_path}")
-
-                            # Use vocals audio for segmentation
-                            audio_for_segmentation = str(vocals_cache_path)
-                            print_info("Using vocals audio for timeline segmentation")
-                        else:
-                            print_warning("Audio split failed, using original audio for segmentation")
+                        # Start audio splitting in background thread
+                        split_thread = threading.Thread(
+                            target=audio_split_background,
+                            args=(tmp_audio_path, api_url, cache_dir),
+                            daemon=True
+                        )
+                        split_thread.start()
+                        print_info("Audio splitting started in background (processing continues...)")
 
                     # Step 2: Segment audio with timeline
                     print_info("Step 2/4: Segmenting audio with VAD-based timeline...")

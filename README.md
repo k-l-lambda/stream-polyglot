@@ -197,28 +197,28 @@ python -m main video.mp4 --lang eng:cmn --subtitle --audio --split
 
 **How it works:**
 1. Extracts audio from video using FFmpeg
-2. Calls m4t `/v1/audio-split` API to separate vocals from accompaniment (using Spleeter)
-3. Saves both streams to cache directory (`.stream-polyglot-cache/[video_name]/split/`)
+2. **Starts audio splitting in background thread** (non-blocking)
+3. Continues immediately with VAD segmentation and ASR processing
+4. Split audio is saved asynchronously to cache directory (`.stream-polyglot-cache/[video_name]/split/`)
    - `vocals.wav`: Clean human voice/speech
    - `accompaniment.wav`: Background music and other sounds
-4. Uses vocals audio for timeline segmentation (better speech detection accuracy)
-5. Generates subtitles/dubbing based on the vocals stream
+5. **Note**: Original audio (not separated vocals) is used for VAD segmentation and ASR to maintain compatibility
 
 **Benefits:**
-- **Better speech detection**: Removing background music improves VAD (Voice Activity Detection) accuracy
-- **Cleaner segmentation**: Speech fragments are more precisely extracted without music interference
-- **Cached for reuse**: Split audio is saved for future subtitle/audio generation
+- **No performance impact**: Audio splitting runs in background, doesn't delay subtitle/audio generation
+- **Audio archival**: Saves separated vocals and accompaniment for later use
+- **Audio editing**: Provides clean vocal and accompaniment tracks for video editing
+- **Cached for reuse**: Split audio is saved for future processing
 - **Optional feature**: Only used when `--split` flag is set (normal processing without it)
 
 **Use cases:**
-- Videos with strong background music that interferes with speech detection
-- Music videos with vocals that need translation
-- Movies with loud soundtracks
-- Presentations with background music
+- Archive separate vocal and music tracks from videos
+- Provide clean audio sources for video editing workflows
+- Extract vocals or accompaniment for remixing purposes
 
 **Requirements:**
 - m4t server must have Spleeter installed (`pip install spleeter`)
-- Processing time increases by ~0.6-0.7x real-time for audio splitting step
+- Audio splitting runs asynchronously in background (no processing delay)
 
 ### Generate Voice-Cloned Audio from Bilingual Subtitles
 
