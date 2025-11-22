@@ -1,11 +1,12 @@
 /**
  * Language order information
+ * Convention: Filename is {source}-{target}.srt, output displays target at top
  */
 export interface LanguageInfo {
-  firstLang: string; // e.g., "cmn" or "eng"
-  secondLang: string; // e.g., "eng" or "cmn"
-  firstLangName: string; // e.g., "Chinese" or "English"
-  secondLangName: string; // e.g., "English" or "Chinese"
+  firstLang: string;     // source language code (e.g., "eng", "jpn")
+  secondLang: string;    // target language code (e.g., "cmn", "eng")
+  firstLangName: string; // source language name (e.g., "English", "Japanese")
+  secondLangName: string; // target language name (e.g., "Chinese", "English")
 }
 
 /**

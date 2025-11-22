@@ -10,18 +10,20 @@ export function buildSystemPrompt(languageInfo: LanguageInfo | null): string {
   if (languageInfo) {
     languageGuidance = `
 Language Information:
-- First line: ${languageInfo.firstLangName} (${languageInfo.firstLang})
-- Second line: ${languageInfo.secondLangName} (${languageInfo.secondLang})
+- Source language: ${languageInfo.firstLangName} (${languageInfo.firstLang})
+- Target language: ${languageInfo.secondLangName} (${languageInfo.secondLang})
+
+Display Convention: Target language at top, source language at bottom
 
 When calling functions:
-- first_lang_text: ${languageInfo.firstLangName} translation
-- second_lang_text: ${languageInfo.secondLangName} translation
-- IMPORTANT: Always return languages in this exact order`;
+- first_lang_text: ${languageInfo.firstLangName} (source) translation
+- second_lang_text: ${languageInfo.secondLangName} (target) translation
+- IMPORTANT: The output will display target at top, source at bottom`;
   } else {
     languageGuidance = `
 For bilingual subtitles:
-- first_lang_text: First line language
-- second_lang_text: Second line language`;
+- first_lang_text: Source language text
+- second_lang_text: Target language text`;
   }
 
   return `You are a subtitle refinement expert. Your task is to review subtitle entries and mark them using function calls.

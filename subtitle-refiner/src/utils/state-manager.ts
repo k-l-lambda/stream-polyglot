@@ -71,15 +71,18 @@ export class SubtitleStateManager {
 
   /**
    * Mark subtitle as finished with refined text
-   * Stores in the order specified by filename (first_lang, second_lang)
+   * Always outputs: target language at top (line1), source language at bottom (line2)
+   * Convention: Filename {source}-{target}.srt, display target first
    */
   markRefined(index: number, firstLangText: string, secondLangText: string): boolean {
     const sub = this.get(index);
     if (!sub) return false;
 
-    // Store in filename order (line1 = firstLang, line2 = secondLang)
-    const line1 = firstLangText;
-    const line2 = secondLangText;
+    // Convention: firstLang=source, secondLang=target
+    // Display: target at top (line1), source at bottom (line2)
+    // So: line1 = secondLangText (target), line2 = firstLangText (source)
+    const line1 = secondLangText; // target language (displayed at top)
+    const line2 = firstLangText;  // source language (displayed at bottom)
 
     sub.state = 'finished';
     sub.refined = { firstLangText, secondLangText };

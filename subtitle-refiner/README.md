@@ -9,8 +9,47 @@ LLM-powered SRT subtitle refinement with function calling. Uses OpenAI GPT-4 (or
 - **State Tracking**: Real-time progress tracking with finished/unfinished states
 - **Retry Mechanism**: Automatic retry prompts when LLM makes no progress
 - **Checkpoint System**: Automatic progress saving and resume support for long refinement jobs
-- **Bilingual Support**: Refines both target and source language lines
+- **Bilingual Support**: Refines both target and source language lines with proper ordering
 - **OpenAI Compatible**: Works with any OpenAI-compatible API
+
+## Bilingual Subtitle Convention
+
+### Filename Format
+
+```
+{name}.{source}-{target}.srt
+```
+
+- **source**: Original audio language (e.g., `eng`, `jpn`, `cmn`)
+- **target**: Translation language (e.g., `cmn`, `eng`, `jpn`)
+
+### Display Order
+
+**Target language at top, source language at bottom**
+
+This is because audiences primarily read the target language (translation).
+
+### Examples
+
+```
+video.eng-cmn.srt  → English source, Chinese target
+                   → Display: Chinese at top, English at bottom
+
+movie.jpn-eng.srt  → Japanese source, English target
+                   → Display: English at top, Japanese at bottom
+
+test.cmn-eng.srt   → Chinese source, English target
+                   → Display: English at top, Chinese at bottom
+```
+
+### Sample Content
+
+```srt
+1
+00:00:01,000 --> 00:00:04,000
+你好，你今天好吗？           ← Target (Chinese) at top
+Hello, how are you today?    ← Source (English) at bottom
+```
 
 ## Quick Start
 
@@ -119,9 +158,10 @@ this_is_fine(5)
 
 // Subtitle needs refinement
 this_should_be(6,
-  "Improved translation text",  // tar_text
-  "Improved source text"         // src_text
+  "Improved source text",        // first_lang_text (source)
+  "Improved translation text"    // second_lang_text (target)
 )
+// Note: Output will display target at top, source at bottom
 ```
 
 ### Centered Window Strategy
