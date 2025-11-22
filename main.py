@@ -14,7 +14,6 @@ import requests
 import subprocess
 import tempfile
 import threading
-import shlex
 from pathlib import Path
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -751,14 +750,12 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     print_info("Refining subtitle translations with LLM...")
 
                     refiner_path = Path(__file__).parent.parent / 'stream-polyglot-refiner' / 'subtitle-refiner'
-                    # Use shlex.quote to properly escape the file path
-                    refiner_cmd = f"cd {shlex.quote(str(refiner_path))} && node dist/index.js {shlex.quote(str(output_srt_path))}"
 
                     try:
-                        # Use Popen to stream output in real-time
+                        # Use Popen with cwd parameter (cross-platform compatible)
                         process = subprocess.Popen(
-                            refiner_cmd,
-                            shell=True,
+                            ['node', 'dist/index.js', str(output_srt_path)],
+                            cwd=str(refiner_path),  # Change directory using cwd parameter
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
                             text=True,
