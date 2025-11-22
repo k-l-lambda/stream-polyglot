@@ -172,6 +172,38 @@ Hello, how are you today?
 I'm doing great, thank you!
 ```
 
+### Automatic Subtitle Refinement with LLM
+
+**NEW FEATURE**: Automatically refine generated subtitles with LLM (subtitle-refiner) to improve translation quality:
+
+```bash
+# Generate and automatically refine subtitles (bilingual mode enabled by default)
+python -m main video.mp4 --lang eng:cmn --subtitle --subtitle-refiner
+
+# Explicitly specify bilingual mode (same result as above)
+python -m main video.mp4 --lang eng:cmn --subtitle --subtitle-source-lang --subtitle-refiner
+```
+
+**Important**: Using `--subtitle-refiner` automatically enables `--subtitle-source-lang` to generate bilingual subtitles, as the refiner works best with both source and target languages for context.
+
+**How it works:**
+1. Generates bilingual subtitle file (source + target languages)
+2. Automatically runs subtitle-refiner on the generated SRT file
+3. LLM reviews and improves translations for accuracy and naturalness
+4. Outputs refined subtitle file (e.g., `video.eng-cmn.refined.srt`)
+
+**Benefits:**
+- **Better translations**: LLM refines machine translations for naturalness
+- **Context awareness**: Reviews subtitles in windowed context for coherence
+- **Bilingual by default**: Both languages help LLM understand context better
+- **Automated workflow**: No manual refinement step needed
+- **Preserves timing**: Only improves text, keeps original timestamps
+
+**Requirements:**
+- subtitle-refiner must be installed at `../stream-polyglot-refiner/subtitle-refiner/`
+- OpenAI API key configured in subtitle-refiner environment
+- Additional processing time: ~1-2 minutes per 100 subtitle entries
+
 ### Generate Audio Dubbing
 
 Replace audio with translated speech:

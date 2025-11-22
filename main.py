@@ -14,6 +14,7 @@ import requests
 import subprocess
 import tempfile
 import threading
+import shlex
 from pathlib import Path
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -534,7 +535,7 @@ def save_timeline_cache(timeline, metadata, cache_dir, fragments_dir):
         return False
 
 
-def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url, speaker_id=0, split_audio=False):
+def process_video(input_file, source_lang, target_lang, generate_audio, generate_subtitle, subtitle_source_lang, output_dir, api_url, speaker_id=0, split_audio=False, run_subtitle_refiner=False):
     """Process video file for translation"""
 
     print_header("Stream-Polyglot Video Translation")
@@ -743,6 +744,38 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
             srt_content = generate_srt_content(subtitles, merge_short=True)
             if save_srt_file(srt_content, str(output_srt_path)):
                 print_success(f"{subtitle_type} subtitle saved: {output_srt_path}")
+
+                # Run subtitle-refiner if requested
+                if run_subtitle_refiner:
+                    print_header("Running Subtitle Refiner")
+                    print_info("Refining subtitle translations with LLM...")
+
+                    refiner_path = Path(__file__).parent.parent / 'stream-polyglot-refiner' / 'subtitle-refiner'
+                    # Use shlex.quote to properly escape the file path
+                    refiner_cmd = f"cd {shlex.quote(str(refiner_path))} && node dist/index.js {shlex.quote(str(output_srt_path))}"
+
+                    try:
+                        result = subprocess.run(
+                            refiner_cmd,
+                            shell=True,
+                            check=True,
+                            capture_output=True,
+                            text=True
+                        )
+                        print(result.stdout)
+                        if result.stderr:
+                            print(result.stderr)
+                        print_success("Subtitle refinement completed")
+                    except subprocess.CalledProcessError as e:
+                        print_error(f"Subtitle refiner failed: {e}")
+                        if e.stdout:
+                            print_error(f"Output: {e.stdout}")
+                        if e.stderr:
+                            print_error(f"Error: {e.stderr}")
+                        print_warning("Continuing with unrefined subtitle...")
+                    except Exception as e:
+                        print_error(f"Error running subtitle refiner: {e}")
+                        print_warning("Continuing with unrefined subtitle...")
             else:
                 print_error(f"Failed to save {subtitle_type.lower()} subtitle")
                 return 1
@@ -1372,6 +1405,13 @@ See http://localhost:8000/languages for full list of supported languages.
         help='Source language for subtitle generation (default: same as --lang source language)'
     )
 
+    # Subtitle refiner option
+    parser.add_argument(
+        '--subtitle-refiner',
+        action='store_true',
+        help='Automatically run subtitle-refiner on generated subtitle file to improve translation quality (enables --subtitle-source-lang by default)'
+    )
+
     # Audio split option (split before segmentation)
     parser.add_argument(
         '--split',
@@ -1413,6 +1453,12 @@ See http://localhost:8000/languages for full list of supported languages.
     )
 
     args = parser.parse_args()
+
+    # Auto-enable subtitle-source-lang when using subtitle-refiner
+    if args.subtitle_refiner:
+        args.subtitle_source_lang = True
+        if args.subtitle:
+            print_info("--subtitle-refiner enabled: bilingual subtitles will be generated automatically")
 
     # Check if using --trans-voice mode
     if args.trans_voice:
@@ -1482,7 +1528,8 @@ See http://localhost:8000/languages for full list of supported languages.
                 args.output,
                 args.api_url,
                 args.speaker_id,
-                args.split
+                args.split,
+                args.subtitle_refiner
             )
         except KeyboardInterrupt:
             print_error("\n\nInterrupted by user")
