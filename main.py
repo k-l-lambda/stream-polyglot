@@ -755,24 +755,29 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     refiner_cmd = f"cd {shlex.quote(str(refiner_path))} && node dist/index.js {shlex.quote(str(output_srt_path))}"
 
                     try:
-                        result = subprocess.run(
+                        # Use Popen to stream output in real-time
+                        process = subprocess.Popen(
                             refiner_cmd,
                             shell=True,
-                            check=True,
-                            capture_output=True,
-                            text=True
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            bufsize=1,
+                            universal_newlines=True
                         )
-                        print(result.stdout)
-                        if result.stderr:
-                            print(result.stderr)
-                        print_success("Subtitle refinement completed")
-                    except subprocess.CalledProcessError as e:
-                        print_error(f"Subtitle refiner failed: {e}")
-                        if e.stdout:
-                            print_error(f"Output: {e.stdout}")
-                        if e.stderr:
-                            print_error(f"Error: {e.stderr}")
-                        print_warning("Continuing with unrefined subtitle...")
+
+                        # Stream output line by line
+                        for line in process.stdout:
+                            print(line, end='')
+
+                        # Wait for process to complete
+                        return_code = process.wait()
+
+                        if return_code == 0:
+                            print_success("Subtitle refinement completed")
+                        else:
+                            print_error(f"Subtitle refiner failed with exit code {return_code}")
+                            print_warning("Continuing with unrefined subtitle...")
                     except Exception as e:
                         print_error(f"Error running subtitle refiner: {e}")
                         print_warning("Continuing with unrefined subtitle...")
