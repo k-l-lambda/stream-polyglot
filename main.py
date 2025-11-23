@@ -170,7 +170,13 @@ def extract_audio(video_path, output_audio_path):
         ]
 
         print_info(f"Extracting audio from video...")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',      # Explicitly use UTF-8 encoding for Windows
+            errors='replace'       # Replace invalid characters instead of crashing
+        )
 
         if result.returncode != 0:
             print_error(f"FFmpeg error: {result.stderr}")
