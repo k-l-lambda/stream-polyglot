@@ -229,14 +229,19 @@ python -m main video.mp4 --lang eng:cmn --subtitle --audio --split
 
 **How it works:**
 1. Extracts audio from video using FFmpeg
-2. **Starts audio splitting in background thread** (non-blocking)
-3. Continues immediately with VAD segmentation and ASR processing
-4. Split audio is saved asynchronously to cache directory (`.stream-polyglot-cache/[video_name]/split/`)
+2. **Detects audio duration and splits into chunks if needed (>5 minutes)**
+3. **Starts audio splitting in background thread** (non-blocking)
+   - For short audio (<5 min): Single API call
+   - For long audio (>5 min): Client-side chunking, multiple API calls, automatic concatenation
+4. Continues immediately with VAD segmentation and ASR processing
+5. Split audio is saved asynchronously to cache directory (`.stream-polyglot-cache/[video_name]/split/`)
    - `vocals.wav`: Clean human voice/speech
    - `accompaniment.wav`: Background music and other sounds
-5. **Note**: Original audio (not separated vocals) is used for VAD segmentation and ASR to maintain compatibility
+6. **Note**: Original audio (not separated vocals) is used for VAD segmentation and ASR to maintain compatibility
 
 **Benefits:**
+- **No duration limit**: Client-side chunking handles audio of any length
+- **No network timeout**: Each chunk is sent separately (5-minute max per request)
 - **No performance impact**: Audio splitting runs in background, doesn't delay subtitle/audio generation
 - **Audio archival**: Saves separated vocals and accompaniment for later use
 - **Audio editing**: Provides clean vocal and accompaniment tracks for video editing

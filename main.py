@@ -319,17 +319,49 @@ def save_base64_audio_to_file(audio_base64, output_path):
         return False
 
 
-def audio_split(audio_path, api_url, verbose=True):
+def audio_split(audio_path, api_url, verbose=True, max_chunk_duration=300.0):
     """
     Call m4t API for audio splitting (vocals + accompaniment)
+
+    For long audio files, splits into chunks on client side to avoid network timeout.
 
     Args:
         audio_path: Path to audio file
         api_url: m4t API server URL
         verbose: Print info messages
+        max_chunk_duration: Maximum chunk duration in seconds (default: 300s = 5 minutes)
 
     Returns:
         Tuple of (vocals_bytes, accompaniment_bytes, sample_rate) or (None, None, None) on error
+    """
+    try:
+        import soundfile as sf
+
+        # Load audio to check duration
+        audio_array, sr = sf.read(audio_path, dtype='float32')
+        total_duration = len(audio_array) / sr
+
+        if verbose:
+            print_info(f"Audio duration: {total_duration:.2f}s")
+
+        # If audio is short enough, process directly
+        if total_duration <= max_chunk_duration:
+            return _audio_split_direct(audio_path, api_url, verbose)
+
+        # For long audio, process in chunks
+        if verbose:
+            print_info(f"Audio exceeds {max_chunk_duration}s, processing in chunks...")
+
+        return _audio_split_chunked(audio_array, sr, api_url, max_chunk_duration, verbose)
+
+    except Exception as e:
+        print_error(f"Error in audio split: {e}")
+        return None, None, None
+
+
+def _audio_split_direct(audio_path, api_url, verbose=True):
+    """
+    Direct audio split for short audio files (<= 5 minutes)
     """
     try:
         if verbose:
@@ -348,7 +380,7 @@ def audio_split(audio_path, api_url, verbose=True):
         response = requests.post(
             f"{api_url}/v1/audio-split",
             files=files,
-            timeout=300  # 5 minutes timeout for long audio
+            timeout=300  # 5 minutes timeout
         )
 
         if response.status_code == 200:
@@ -373,11 +405,121 @@ def audio_split(audio_path, api_url, verbose=True):
             return None, None, None
 
     except requests.exceptions.Timeout:
-        print_error("Request timeout during audio split. Audio file might be too long.")
+        print_error("Request timeout during audio split.")
         return None, None, None
     except Exception as e:
         print_error(f"Error calling audio-split API: {e}")
         return None, None, None
+
+
+def _audio_split_chunked(audio_array, sr, api_url, chunk_duration, verbose=True):
+    """
+    Split long audio into chunks, process each chunk via API, then concatenate results
+
+    Args:
+        audio_array: Full audio array
+        sr: Sample rate
+        api_url: m4t API server URL
+        chunk_duration: Duration of each chunk in seconds
+        verbose: Print info messages
+
+    Returns:
+        Tuple of (vocals_bytes, accompaniment_bytes, sample_rate)
+    """
+    import soundfile as sf
+    import base64
+    import io
+    import numpy as np
+
+    total_duration = len(audio_array) / sr
+    chunk_samples = int(chunk_duration * sr)
+    num_chunks = int(np.ceil(total_duration / chunk_duration))
+
+    if verbose:
+        print_info(f"Processing {num_chunks} chunks of {chunk_duration}s each...")
+
+    vocals_chunks = []
+    accompaniment_chunks = []
+    result_sr = 16000  # Default sample rate
+
+    for i in range(num_chunks):
+        start_sample = i * chunk_samples
+        end_sample = min((i + 1) * chunk_samples, len(audio_array))
+        chunk_array = audio_array[start_sample:end_sample]
+
+        chunk_start_time = start_sample / sr
+        chunk_end_time = end_sample / sr
+
+        if verbose:
+            print_info(f"Processing chunk {i+1}/{num_chunks}: {chunk_start_time:.1f}s - {chunk_end_time:.1f}s")
+
+        # Save chunk to temporary WAV in memory
+        chunk_buffer = io.BytesIO()
+        sf.write(chunk_buffer, chunk_array, sr, format='WAV')
+        chunk_buffer.seek(0)
+        chunk_bytes = chunk_buffer.read()
+
+        # Send chunk to API
+        try:
+            files = {
+                'audio': (f'chunk_{i}.wav', chunk_bytes, 'audio/wav')
+            }
+
+            response = requests.post(
+                f"{api_url}/v1/audio-split",
+                files=files,
+                timeout=300
+            )
+
+            if response.status_code != 200:
+                print_error(f"Chunk {i+1}/{num_chunks} failed: {response.status_code}")
+                return None, None, None
+
+            result = response.json()
+            result_sr = result.get('sample_rate', 16000)
+
+            # Decode base64 audio streams
+            vocals_base64 = result.get('vocals_audio_base64', '')
+            accompaniment_base64 = result.get('accompaniment_audio_base64', '')
+
+            vocals_chunk_bytes = base64.b64decode(vocals_base64)
+            accompaniment_chunk_bytes = base64.b64decode(accompaniment_base64)
+
+            # Load as arrays for concatenation
+            vocals_chunk_array, _ = sf.read(io.BytesIO(vocals_chunk_bytes), dtype='float32')
+            accompaniment_chunk_array, _ = sf.read(io.BytesIO(accompaniment_chunk_bytes), dtype='float32')
+
+            vocals_chunks.append(vocals_chunk_array)
+            accompaniment_chunks.append(accompaniment_chunk_array)
+
+        except Exception as e:
+            print_error(f"Error processing chunk {i+1}/{num_chunks}: {e}")
+            return None, None, None
+
+    # Concatenate all chunks
+    if verbose:
+        print_info("Concatenating processed chunks...")
+
+    vocals_array = np.concatenate(vocals_chunks)
+    accompaniment_array = np.concatenate(accompaniment_chunks)
+
+    # Convert concatenated arrays back to bytes
+    vocals_buffer = io.BytesIO()
+    accompaniment_buffer = io.BytesIO()
+
+    sf.write(vocals_buffer, vocals_array, result_sr, format='WAV')
+    sf.write(accompaniment_buffer, accompaniment_array, result_sr, format='WAV')
+
+    vocals_buffer.seek(0)
+    accompaniment_buffer.seek(0)
+
+    vocals_bytes = vocals_buffer.read()
+    accompaniment_bytes = accompaniment_buffer.read()
+
+    if verbose:
+        print_success(f"Audio split completed: {len(vocals_array)/result_sr:.2f}s processed")
+
+    return vocals_bytes, accompaniment_bytes, result_sr
 
 
 def audio_split_background(audio_path, api_url, cache_dir):
@@ -392,7 +534,7 @@ def audio_split_background(audio_path, api_url, cache_dir):
     try:
         print_info("Starting audio split in background...")
 
-        vocals_bytes, accompaniment_bytes, sr = audio_split(audio_path, api_url, verbose=False)
+        vocals_bytes, accompaniment_bytes, _ = audio_split(audio_path, api_url, verbose=False)
 
         if vocals_bytes and accompaniment_bytes:
             # Save vocals and accompaniment to cache directory
@@ -602,6 +744,22 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
             total_duration = metadata.get('total_duration', 0)
             print_info(f"Using {fragment_count} cached speech fragments")
             print_info(f"Total audio duration: {total_duration:.2f}s")
+
+            # If split_audio is requested, extract audio and run splitting in background
+            if split_audio:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+
+                    print_info("Extracting audio for splitting...")
+                    if extract_audio(input_file, tmp_audio_path):
+                        # Start audio splitting in background thread
+                        split_thread = threading.Thread(
+                            target=audio_split_background,
+                            args=(tmp_audio_path, api_url, cache_dir),
+                            daemon=True
+                        )
+                        split_thread.start()
+                        print_info("Audio splitting started in background (processing continues...)")
         else:
             # Need to segment audio - create persistent cache directory for fragments
             print_info("No cached timeline found, performing segmentation...")
@@ -805,7 +963,7 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
         # Try to load cached timeline first
         cached_timeline, cached_metadata = load_timeline_cache(cache_dir)
 
-        if cached_timeline and cached_metadata:
+        if cached_timeline and cached_timeline and cached_metadata:
             print_success("Found cached timeline data, skipping segmentation")
             timeline = cached_timeline
             metadata = cached_metadata
@@ -816,6 +974,22 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
             sample_rate = metadata.get('sample_rate', 16000)
             print_info(f"Using {fragment_count} cached speech fragments")
             print_info(f"Total audio duration: {total_duration:.2f}s")
+
+            # If split_audio is requested, extract audio and run splitting in background
+            if split_audio:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+
+                    print_info("Extracting audio for splitting...")
+                    if extract_audio(input_file, tmp_audio_path):
+                        # Start audio splitting in background thread
+                        split_thread = threading.Thread(
+                            target=audio_split_background,
+                            args=(tmp_audio_path, api_url, cache_dir),
+                            daemon=True
+                        )
+                        split_thread.start()
+                        print_info("Audio splitting started in background (processing continues...)")
         else:
             # Need to segment audio - create persistent cache directory for fragments
             print_info("No cached timeline found, performing segmentation...")
