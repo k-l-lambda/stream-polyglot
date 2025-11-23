@@ -747,19 +747,21 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
 
             # If split_audio is requested, extract audio and run splitting in background
             if split_audio:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+                # Use cache directory for temporary audio (won't be auto-deleted)
+                split_audio_dir = cache_dir / 'temp_audio'
+                os.makedirs(split_audio_dir, exist_ok=True)
+                tmp_audio_path = str(split_audio_dir / 'extracted_audio.wav')
 
-                    print_info("Extracting audio for splitting...")
-                    if extract_audio(input_file, tmp_audio_path):
-                        # Start audio splitting in background thread
-                        split_thread = threading.Thread(
-                            target=audio_split_background,
-                            args=(tmp_audio_path, api_url, cache_dir),
-                            daemon=True
-                        )
-                        split_thread.start()
-                        print_info("Audio splitting started in background (processing continues...)")
+                print_info("Extracting audio for splitting...")
+                if extract_audio(input_file, tmp_audio_path):
+                    # Start audio splitting in background thread
+                    split_thread = threading.Thread(
+                        target=audio_split_background,
+                        args=(tmp_audio_path, api_url, cache_dir),
+                        daemon=True
+                    )
+                    split_thread.start()
+                    print_info("Audio splitting started in background (processing continues...)")
         else:
             # Need to segment audio - create persistent cache directory for fragments
             print_info("No cached timeline found, performing segmentation...")
@@ -918,7 +920,9 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                             stderr=subprocess.STDOUT,
                             text=True,
                             bufsize=1,
-                            universal_newlines=True
+                            universal_newlines=True,
+                            encoding='utf-8',  # Explicitly use UTF-8 encoding for Windows compatibility
+                            errors='replace'  # Replace invalid characters instead of crashing
                         )
 
                         # Stream output line by line
@@ -977,19 +981,21 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
 
             # If split_audio is requested, extract audio and run splitting in background
             if split_audio:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    tmp_audio_path = os.path.join(temp_dir, 'extracted_audio.wav')
+                # Use cache directory for temporary audio (won't be auto-deleted)
+                split_audio_dir = cache_dir / 'temp_audio'
+                os.makedirs(split_audio_dir, exist_ok=True)
+                tmp_audio_path = str(split_audio_dir / 'extracted_audio.wav')
 
-                    print_info("Extracting audio for splitting...")
-                    if extract_audio(input_file, tmp_audio_path):
-                        # Start audio splitting in background thread
-                        split_thread = threading.Thread(
-                            target=audio_split_background,
-                            args=(tmp_audio_path, api_url, cache_dir),
-                            daemon=True
-                        )
-                        split_thread.start()
-                        print_info("Audio splitting started in background (processing continues...)")
+                print_info("Extracting audio for splitting...")
+                if extract_audio(input_file, tmp_audio_path):
+                    # Start audio splitting in background thread
+                    split_thread = threading.Thread(
+                        target=audio_split_background,
+                        args=(tmp_audio_path, api_url, cache_dir),
+                        daemon=True
+                    )
+                    split_thread.start()
+                    print_info("Audio splitting started in background (processing continues...)")
         else:
             # Need to segment audio - create persistent cache directory for fragments
             print_info("No cached timeline found, performing segmentation...")
