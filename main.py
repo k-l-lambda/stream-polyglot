@@ -1422,11 +1422,17 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         if total_duration == 0 and cloned_segments:
             total_duration = max(seg['end'] for seg in cloned_segments)
 
-        # Use the sample rate from cloned audio (usually 32000 for GPT-SoVITS)
-        # instead of cached metadata (16000 for original audio)
+        # Use GPT-SoVITS native sample rate (32000 Hz) for best quality
+        # This avoids unnecessary resampling and quality degradation
+        TARGET_SAMPLE_RATE = 32000
+
+        # Verify all segments have consistent sample rate
         if cloned_segments:
-            sample_rate = cloned_segments[0]['sample_rate']
-            print_info(f"Using cloned audio sample rate: {sample_rate} Hz")
+            sample_rates = set(seg['sample_rate'] for seg in cloned_segments)
+            if len(sample_rates) > 1:
+                print_warning(f"Inconsistent sample rates detected: {sample_rates}")
+                print_info(f"All segments will be resampled to {TARGET_SAMPLE_RATE} Hz")
+            sample_rate = TARGET_SAMPLE_RATE
         else:
             sample_rate = cached_metadata.get('sample_rate', 16000)
 
