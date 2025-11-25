@@ -861,23 +861,45 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                         # Translate fragment to target language
                         result = speech_to_text_translation(fragment_path, source_lang, target_lang, api_url, verbose=False)
 
+                        translated_text = None
                         if result and result.get('output_text'):
                             translated_text = result['output_text'].strip()
-                            if translated_text:
-                                # If bilingual mode, combine source and target text
-                                if subtitle_source_lang and source_text:
-                                    # Bilingual format: target language on first line, source language on second line
-                                    combined_text = f"{translated_text}\n{source_text}"
-                                else:
-                                    combined_text = translated_text
 
-                                subtitles.append({
-                                    'start': fragment['start'],
-                                    'end': fragment['end'],
-                                    'text': combined_text
-                                })
+                        # Build subtitle entry if we have at least one text (source or target)
+                        if translated_text or source_text:
+                            # Construct combined text based on what's available
+                            if subtitle_source_lang:
+                                # Bilingual mode: target on first line, source on second line
+                                if translated_text and source_text:
+                                    # Both succeeded - ideal case
+                                    combined_text = f"{translated_text}\n{source_text}"
+                                elif translated_text:
+                                    # Only target succeeded - show target with placeholder
+                                    combined_text = f"{translated_text}\n[Source transcription failed]"
+                                elif source_text:
+                                    # Only source succeeded - show source with placeholder
+                                    combined_text = f"[Translation failed]\n{source_text}"
+                                else:
+                                    # Should not reach here due to outer if condition
+                                    combined_text = "[Both failed]"
+                            else:
+                                # Single language mode: only use translated text
+                                if translated_text:
+                                    combined_text = translated_text
+                                else:
+                                    # Translation failed, skip this fragment in single-lang mode
+                                    tqdm.write(f"{Colors.YELLOW}⚠ Fragment {i}: Translation failed, skipping{Colors.END}")
+                                    pbar.update(1)
+                                    continue
+
+                            subtitles.append({
+                                'start': fragment['start'],
+                                'end': fragment['end'],
+                                'text': combined_text
+                            })
                         else:
-                            tqdm.write(f"{Colors.YELLOW}⚠ Fragment {i}: Translation failed, skipping{Colors.END}")
+                            # Both failed in bilingual mode, or translation failed in single-lang mode
+                            tqdm.write(f"{Colors.YELLOW}⚠ Fragment {i}: All transcription/translation failed, skipping{Colors.END}")
 
                         # Update progress bar
                         pbar.update(1)
