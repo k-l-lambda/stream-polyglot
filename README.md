@@ -200,9 +200,26 @@ python -m main video.mp4 --lang eng:cmn --subtitle --subtitle-source-lang --subt
 - **Preserves timing**: Only improves text, keeps original timestamps
 
 **Requirements:**
-- subtitle-refiner must be installed at `../stream-polyglot-refiner/subtitle-refiner/`
+- subtitle-refiner must be installed in one of these locations:
+  - `../stream-polyglot-refiner/subtitle-refiner/` (recommended for development)
+  - `./subtitle-refiner/` (inside stream-polyglot directory)
+  - The script will search multiple locations automatically
 - OpenAI API key configured in subtitle-refiner environment
 - Additional processing time: ~1-2 minutes per 100 subtitle entries
+
+**Setup subtitle-refiner:**
+```bash
+# Clone subtitle-refiner repository (sibling to stream-polyglot)
+cd ..
+git clone https://github.com/yourusername/subtitle-refiner.git stream-polyglot-refiner/subtitle-refiner
+cd stream-polyglot-refiner/subtitle-refiner
+
+# Install dependencies and build
+npm install
+npm run build
+
+# Configure OpenAI API key (see subtitle-refiner README)
+```
 
 ### Generate Audio Dubbing
 

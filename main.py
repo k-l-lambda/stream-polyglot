@@ -937,37 +937,55 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     print_header("Running Subtitle Refiner")
                     print_info("Refining subtitle translations with LLM...")
 
-                    refiner_path = Path(__file__).parent.parent / 'stream-polyglot-refiner' / 'subtitle-refiner'
+                    # Try to find subtitle-refiner in multiple possible locations
+                    possible_paths = [
+                        Path(__file__).parent.parent / 'stream-polyglot-refiner' / 'subtitle-refiner',
+                        Path(__file__).parent / 'subtitle-refiner',
+                        Path.cwd() / 'stream-polyglot-refiner' / 'subtitle-refiner',
+                        Path.cwd().parent / 'stream-polyglot-refiner' / 'subtitle-refiner'
+                    ]
 
-                    try:
-                        # Use Popen with cwd parameter (cross-platform compatible)
-                        process = subprocess.Popen(
-                            ['node', 'dist/index.js', str(output_srt_path)],
-                            cwd=str(refiner_path),  # Change directory using cwd parameter
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            bufsize=1,
-                            universal_newlines=True,
-                            encoding='utf-8',  # Explicitly use UTF-8 encoding for Windows compatibility
-                            errors='replace'  # Replace invalid characters instead of crashing
-                        )
+                    refiner_path = None
+                    for path in possible_paths:
+                        if path.exists() and (path / 'dist' / 'index.js').exists():
+                            refiner_path = path
+                            break
 
-                        # Stream output line by line
-                        for line in process.stdout:
-                            print(line, end='')
-
-                        # Wait for process to complete
-                        return_code = process.wait()
-
-                        if return_code == 0:
-                            print_success("Subtitle refinement completed")
-                        else:
-                            print_error(f"Subtitle refiner failed with exit code {return_code}")
-                            print_warning("Continuing with unrefined subtitle...")
-                    except Exception as e:
-                        print_error(f"Error running subtitle refiner: {e}")
+                    if not refiner_path:
+                        print_error("Subtitle-refiner not found. Searched locations:")
+                        for path in possible_paths:
+                            print_error(f"  - {path}")
                         print_warning("Continuing with unrefined subtitle...")
+                    else:
+                        try:
+                            # Use Popen with cwd parameter (cross-platform compatible)
+                            process = subprocess.Popen(
+                                ['node', 'dist/index.js', str(output_srt_path)],
+                                cwd=str(refiner_path),  # Change directory using cwd parameter
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                                bufsize=1,
+                                universal_newlines=True,
+                                encoding='utf-8',  # Explicitly use UTF-8 encoding for Windows compatibility
+                                errors='replace'  # Replace invalid characters instead of crashing
+                            )
+
+                            # Stream output line by line
+                            for line in process.stdout:
+                                print(line, end='')
+
+                            # Wait for process to complete
+                            return_code = process.wait()
+
+                            if return_code == 0:
+                                print_success("Subtitle refinement completed")
+                            else:
+                                print_error(f"Subtitle refiner failed with exit code {return_code}")
+                                print_warning("Continuing with unrefined subtitle...")
+                        except Exception as e:
+                            print_error(f"Error running subtitle refiner: {e}")
+                            print_warning("Continuing with unrefined subtitle...")
             else:
                 print_error(f"Failed to save {subtitle_type.lower()} subtitle")
                 return 1
