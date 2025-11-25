@@ -874,14 +874,14 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                                     # Both succeeded - ideal case
                                     combined_text = f"{translated_text}\n{source_text}"
                                 elif translated_text:
-                                    # Only target succeeded - show target with placeholder
-                                    combined_text = f"{translated_text}\n[Source transcription failed]"
+                                    # Only target succeeded - show target with empty source line
+                                    combined_text = f"{translated_text}\n"
                                 elif source_text:
-                                    # Only source succeeded - show source with placeholder
-                                    combined_text = f"[Translation failed]\n{source_text}"
+                                    # Only source succeeded - show empty target line with source
+                                    combined_text = f"\n{source_text}"
                                 else:
                                     # Should not reach here due to outer if condition
-                                    combined_text = "[Both failed]"
+                                    combined_text = ""
                             else:
                                 # Single language mode: only use translated text
                                 if translated_text:
