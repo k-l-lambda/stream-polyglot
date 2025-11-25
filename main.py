@@ -937,7 +937,7 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
                     print_header("Running Subtitle Refiner")
                     print_info("Refining subtitle translations with LLM...")
 
-                    refiner_path = Path(__file__).parent.parent / 'stream-polyglot-refiner' / 'subtitle-refiner'
+                    refiner_path = Path(__file__).parent / 'subtitle-refiner'
 
                     try:
                         # Use Popen with cwd parameter (cross-platform compatible)
