@@ -289,6 +289,19 @@ python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt --seed 4
   - Same input + same seed = identical output audio
   - Useful for A/B testing, debugging, or when consistent output is required
 
+**Verbose Mode for Debugging:**
+```bash
+# Enable verbose mode to save intermediate audio files
+python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt --verbose
+```
+
+- `--verbose` enables detailed logging and saves all intermediate voice-cloned audio segments
+- Intermediate files are saved to: `<cache_dir>/voice_clone_debug/`
+- Files are named: `segment_NNNN_<src_lang>-<tgt_lang>_<text_preview>.wav`
+- Example filename: `segment_0042_eng-cmn_Hello_how_are_you_today....wav`
+- Useful for debugging voice cloning quality issues or inspecting individual segments
+- Debug files are preserved across runs (not auto-deleted)
+
 **How it works:**
 1. Reads bilingual SRT file (target language + source language)
 2. Checks for cached timeline; if not found, automatically extracts audio and segments it

@@ -564,7 +564,7 @@ def audio_split_background(audio_path, api_url, cache_dir):
         print_error(f"Background audio split error: {e}")
 
 
-def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, prompt_language, api_url, seed=-1, verbose=True):
+def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, prompt_language, api_url, seed=-1, verbose=True, cache_dir=None, segment_index=None):
     """
     Call m4t API for voice cloning
 
@@ -577,6 +577,8 @@ def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, pr
         api_url: m4t API server URL
         seed: Random seed for reproducibility (-1 for random)
         verbose: Print info messages
+        cache_dir: Cache directory for dumping intermediate audio (required if verbose=True)
+        segment_index: Segment index for naming intermediate audio files
 
     Returns:
         Audio bytes or None on error
@@ -615,6 +617,27 @@ def voice_clone_translation(ref_audio_path, text, text_language, prompt_text, pr
             import base64
             audio_base64 = result.get('output_audio_base64', '')
             audio_bytes = base64.b64decode(audio_base64)
+
+            # Dump intermediate audio if verbose mode is enabled
+            if verbose and cache_dir and segment_index is not None:
+                debug_dir = Path(cache_dir) / 'voice_clone_debug'
+                os.makedirs(debug_dir, exist_ok=True)
+
+                # Create descriptive filename with index, languages, and truncated text
+                # Truncate text to avoid overly long filenames
+                text_preview = text[:30].replace(' ', '_').replace('/', '_').replace('\\', '_')
+                if len(text) > 30:
+                    text_preview += '...'
+
+                debug_filename = f"segment_{segment_index:04d}_{prompt_language}-{text_language}_{text_preview}.wav"
+                debug_path = debug_dir / debug_filename
+
+                # Save audio bytes to file
+                with open(debug_path, 'wb') as f:
+                    f.write(audio_bytes)
+
+                print_info(f"Saved intermediate audio: {debug_path.name}")
+
             return audio_bytes
         else:
             print_error(f"Voice clone API error: {response.status_code}")
@@ -1186,7 +1209,7 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
     return 0
 
 
-def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_dir, api_url, seed=None):
+def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_dir, api_url, seed=None, verbose=False):
     """
     Process voice cloning translation from bilingual SRT file
 
@@ -1198,6 +1221,7 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         output_dir: Output directory for generated audio
         api_url: m4t API server URL
         seed: Random seed for reproducibility (None for random-but-fixed, >=0 for specific seed)
+        verbose: Enable verbose mode to dump intermediate audio files
 
     Returns:
         Exit code (0 for success, 1 for error)
@@ -1210,6 +1234,9 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         print_info(f"Generated random seed: {seed}")
     else:
         print_info(f"Using fixed seed: {seed}")
+
+    if verbose:
+        print_info("Verbose mode enabled: intermediate audio will be saved to cache directory")
 
     print_header("Stream-Polyglot Voice Cloning from Subtitle")
 
@@ -1400,7 +1427,7 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         with tqdm(total=len(matched_segments), desc="Cloning", unit="segment",
                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
                  ncols=80) as pbar:
-                for seg in matched_segments:
+                for idx, seg in enumerate(matched_segments):
                     # Call voice-clone API with the same seed for all segments
                     audio_bytes = voice_clone_translation(
                         ref_audio_path=seg['ref_audio_path'],
@@ -1410,7 +1437,9 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
                         prompt_language=source_lang,
                         api_url=api_url,
                         seed=seed,
-                        verbose=False
+                        verbose=verbose,
+                        cache_dir=cache_dir if verbose else None,
+                        segment_index=idx
                     )
 
                     if audio_bytes:
@@ -1517,6 +1546,12 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         print_info(f"Sample rate: {sample_rate} Hz")
         print_info(f"Duration: {total_duration:.2f} seconds")
 
+        if verbose:
+            debug_dir = cache_dir / 'voice_clone_debug'
+            if debug_dir.exists():
+                debug_files = list(debug_dir.glob('*.wav'))
+                print_info(f"Debug audio files: {len(debug_files)} segments saved to {debug_dir}")
+
     except Exception as e:
         print_error(f"Error during voice cloning translation: {e}")
         import traceback
@@ -1560,6 +1595,9 @@ Examples:
 
   # Generate voice-cloned audio with fixed seed for reproducibility
   python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt --seed 42
+
+  # Generate voice-cloned audio in verbose mode (dump intermediate audio files)
+  python -m main video.mp4 --lang eng:cmn --trans-voice video.eng-cmn.srt --verbose
 
   # Specify output directory
   python -m main video.mp4 --lang jpn:eng --subtitle --output ./translated/
@@ -1653,6 +1691,13 @@ See http://localhost:8000/languages for full list of supported languages.
         help='Random seed for voice cloning reproducibility (default: random but fixed across one generation process, 0-1000000 for specific seed)'
     )
 
+    # Verbose mode for debugging
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Enable verbose mode: dump all intermediate audio files (voice-clone segments) to cache directory for debugging'
+    )
+
     # Optional output directory
     parser.add_argument(
         '--output',
@@ -1703,7 +1748,8 @@ See http://localhost:8000/languages for full list of supported languages.
                 target_lang=target_lang,
                 output_dir=args.output,
                 api_url=args.api_url,
-                seed=args.seed
+                seed=args.seed,
+                verbose=args.verbose
             )
         except KeyboardInterrupt:
             print_error("\n\nInterrupted by user")
