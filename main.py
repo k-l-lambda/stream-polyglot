@@ -1444,7 +1444,7 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
             best_match = None
             best_diff = float('inf')
 
-            for fragment in cached_timeline:
+            for fragment in timeline:
                 frag_start = fragment['start']
                 frag_end = fragment['end']
 
@@ -1460,73 +1460,8 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
             if best_match:
                 fragment_path = os.path.join(fragments_dir, best_match['file'])
 
-                # Determine reference audio path
-                ref_audio_path = fragment_path  # Default: single fragment
-                ref_files_list = [best_match['file']]  # For logging
-
-                # Use dynamic speaker-clustered reference if available
-                if speaker_clustering and speaker_clusters:
-                    try:
-                        from speaker_clustering import SpeakerClusterer
-                        clusterer = SpeakerClusterer()
-
-                        # Dynamic reference selection per segment
-                        speaker_id, ref_files, ref_duration = clusterer.select_reference_for_segment(
-                            {'start': sub_start, 'end': sub_end},
-                            speaker_clusters,
-                            Path(fragments_dir),
-                            min_duration=5.0,
-                            target_duration=10.0
-                        )
-
-                        if speaker_id and ref_files and len(ref_files) > 0:
-                            # Need to concatenate if multiple files
-                            if len(ref_files) == 1:
-                                # Single file reference
-                                ref_audio_path = os.path.join(fragments_dir, ref_files[0])
-                                ref_files_list = ref_files
-                            else:
-                                # Multiple files - create temporary concatenated reference
-                                import tempfile
-                                import soundfile as sf
-                                import numpy as np
-
-                                # Create temp reference audio file
-                                temp_ref_dir = cache_dir / 'temp_references'
-                                temp_ref_dir.mkdir(exist_ok=True)
-
-                                temp_ref_file = temp_ref_dir / f"ref_{i:04d}_{speaker_id}.wav"
-
-                                # Load and concatenate reference fragments
-                                audio_segments = []
-                                sample_rate = None
-
-                                for ref_file in ref_files:
-                                    ref_path = Path(fragments_dir) / ref_file
-                                    if ref_path.exists():
-                                        audio, sr = sf.read(ref_path)
-                                        if sample_rate is None:
-                                            sample_rate = sr
-                                        elif sr != sample_rate:
-                                            continue  # Skip mismatched sample rate
-                                        if len(audio.shape) > 1:
-                                            audio = audio.mean(axis=1)
-                                        audio_segments.append(audio)
-
-                                if audio_segments and sample_rate:
-                                    concatenated = np.concatenate(audio_segments)
-                                    sf.write(temp_ref_file, concatenated, sample_rate)
-                                    ref_audio_path = str(temp_ref_file)
-                                    ref_files_list = ref_files
-
-                            if verbose:
-                                print_info(f"  Segment {i}: Using {len(ref_files_list)} fragment(s) as reference ({ref_duration:.1f}s)")
-
-                    except Exception as e:
-                        # Fallback to single fragment on error
-                        if verbose:
-                            print_warning(f"  Segment {i}: Dynamic reference failed ({e}), using single fragment")
-                        pass
+                # Always use single matched fragment as reference audio
+                ref_audio_path = fragment_path
 
                 if os.path.exists(ref_audio_path):
                     matched_segments.append({
