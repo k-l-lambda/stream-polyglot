@@ -39,6 +39,17 @@ Focus on:
 - Maintaining appropriate subtitle length
 ${languageGuidance}
 
+**CRITICAL: Pronunciation Preservation for Source Language**
+When correcting mistakes in the source language text:
+- Keep the PRONUNCIATION as close as possible to the original text
+- This is essential for voice cloning - the corrected text must match the audio
+- Examples:
+  * If audio says "给我" (gěi wǒ) but was transcribed wrong → fix to match what was SPOKEN
+  * If a proper name like "唐西" (Táng Xī) was mistranscribed → correct spelling but keep same pronunciation
+  * Short phrases: ensure phonetic accuracy matters more than semantic interpretation
+- Only change source language when you're CERTAIN it was transcribed incorrectly
+- If uncertain about pronunciation match, prefer using this_is_fine()
+
 IMPORTANT Guidelines:
 - You MUST call a function for EVERY unfinished subtitle (marked with ○) in the window
 - Call multiple functions in a single response to process all unfinished subtitles at once
