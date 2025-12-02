@@ -1209,7 +1209,7 @@ def process_video(input_file, source_lang, target_lang, generate_audio, generate
     return 0
 
 
-def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_dir, api_url, seed=None, verbose=False):
+def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_dir, api_url, seed=None, verbose=False, speaker_clustering=True, clustering_threshold=0.65):
     """
     Process voice cloning translation from bilingual SRT file
 
@@ -1222,6 +1222,8 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         api_url: m4t API server URL
         seed: Random seed for reproducibility (None for random-but-fixed, >=0 for specific seed)
         verbose: Enable verbose mode to dump intermediate audio files
+        speaker_clustering: Enable speaker clustering for better reference audio (default: True)
+        clustering_threshold: Speaker clustering threshold 0-1 (default: 0.65)
 
     Returns:
         Exit code (0 for success, 1 for error)
@@ -1340,6 +1342,104 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
         metadata = cached_metadata
 
     try:
+        # Step 0.5: Speaker Clustering (if enabled)
+        speaker_clusters = None
+        speaker_references = {}
+
+        if speaker_clustering:
+            try:
+                from speaker_clustering import SpeakerClusterer
+
+                print_header("Step 0.5/4: Speaker Clustering")
+                print_info("Analyzing speaker identities for better voice cloning...")
+
+                clusterer = SpeakerClusterer(
+                    method='resemblyzer',
+                    threshold=clustering_threshold
+                )
+
+                # Try load from cache
+                cache_file = cache_dir / 'speaker_clustering.json'
+
+                if cache_file.exists():
+                    print_info("Loading cached speaker clustering...")
+                    import json
+                    with open(cache_file, 'r') as f:
+                        cache_data = json.load(f)
+
+                    # Validate cache
+                    if (cache_data.get('threshold') == clustering_threshold and
+                        cache_data.get('num_fragments') == len(timeline)):
+                        speaker_clusters = cache_data['clusters']
+                        speaker_references = cache_data['reference_files']
+                        print_success(f"Loaded {len(speaker_clusters)} speakers from cache")
+                    else:
+                        print_info("Cache invalid (threshold or fragment count changed), reclustering...")
+
+                # Perform clustering if no valid cache
+                if speaker_clusters is None:
+                    print_info(f"Clustering {len(timeline)} fragments (threshold={clustering_threshold})...")
+                    speaker_clusters = clusterer.cluster_fragments(Path(fragments_dir), timeline)
+
+                    # Show warning if too many speakers detected
+                    if len(speaker_clusters) > 15:
+                        print_warning(f"Detected {len(speaker_clusters)} speakers (unusually high)")
+                        print_info("Consider increasing threshold (e.g., --clustering-threshold 0.7)")
+
+                    # Generate reference audio for each speaker
+                    ref_dir = cache_dir / 'speaker_references'
+                    ref_dir.mkdir(exist_ok=True)
+
+                    print_info("Generating reference audio for each speaker...")
+                    for speaker_id in sorted(speaker_clusters.keys()):
+                        cluster = speaker_clusters[speaker_id]
+                        selected_files = clusterer.select_reference_fragments(
+                            cluster,
+                            max_duration=30.0
+                        )
+
+                        if len(selected_files) == 0:
+                            print_warning(f"{speaker_id}: No valid fragments, skipping")
+                            continue
+
+                        ref_path = ref_dir / f"{speaker_id}_ref.wav"
+                        clusterer.concatenate_fragments(selected_files, Path(fragments_dir), ref_path)
+
+                        # Calculate total duration
+                        import soundfile as sf
+                        audio, sr = sf.read(ref_path)
+                        duration = len(audio) / sr
+
+                        speaker_references[speaker_id] = str(ref_path.relative_to(cache_dir))
+                        frag_count = len(cluster)
+                        selected_count = len(selected_files)
+                        print_info(f"  {speaker_id}: {frag_count} fragments → {selected_count} selected ({duration:.1f}s reference)")
+
+                    # Save cache
+                    import json
+                    cache_data = {
+                        'method': 'resemblyzer',
+                        'threshold': clustering_threshold,
+                        'num_speakers': len(speaker_clusters),
+                        'num_fragments': len(timeline),
+                        'clusters': speaker_clusters,
+                        'reference_files': speaker_references
+                    }
+
+                    with open(cache_file, 'w') as f:
+                        json.dump(cache_data, f, indent=2)
+
+                    print_success(f"Detected {len(speaker_clusters)} speakers, cached results")
+
+            except ImportError:
+                print_warning("Resemblyzer not installed, falling back to single-fragment reference")
+                print_info("Install with: pip install resemblyzer")
+                speaker_clustering = False
+            except Exception as e:
+                print_warning(f"Speaker clustering failed: {e}")
+                print_info("Falling back to single-fragment reference")
+                speaker_clustering = False
+
         # Step 1: Parse bilingual SRT file
         print_header("Step 1/4: Parsing Bilingual SRT File")
         print_info(f"Parsing SRT file: {srt_file}")
@@ -1390,14 +1490,36 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
             if best_match:
                 fragment_path = os.path.join(fragments_dir, best_match['file'])
 
-                if os.path.exists(fragment_path):
+                # Determine reference audio path
+                ref_audio_path = fragment_path  # Default: single fragment
+
+                # Use speaker-clustered reference if available
+                if speaker_clustering and speaker_clusters and speaker_references:
+                    try:
+                        from speaker_clustering import SpeakerClusterer
+                        clusterer = SpeakerClusterer()
+
+                        # Find which speaker this segment belongs to
+                        speaker_id = clusterer.assign_speaker_to_segment(
+                            {'start': sub_start, 'end': sub_end},
+                            speaker_clusters
+                        )
+
+                        if speaker_id and speaker_id in speaker_references:
+                            # Use concatenated speaker reference
+                            ref_audio_path = str(cache_dir / speaker_references[speaker_id])
+                    except Exception as e:
+                        # Fallback to single fragment on error
+                        pass
+
+                if os.path.exists(ref_audio_path):
                     matched_segments.append({
                         'subtitle_index': i,
                         'start': sub_start,
                         'end': sub_end,
                         'target_text': target_text,
                         'source_text': source_text,
-                        'ref_audio_path': fragment_path,
+                        'ref_audio_path': ref_audio_path,
                         'fragment_info': best_match
                     })
                 else:
@@ -1698,6 +1820,29 @@ See http://localhost:8000/languages for full list of supported languages.
         help='Enable verbose mode: dump all intermediate audio files (voice-clone segments) to cache directory for debugging'
     )
 
+    # Speaker clustering for voice cloning
+    parser.add_argument(
+        '--speaker-clustering',
+        action='store_true',
+        default=True,
+        help='Enable speaker clustering for better reference audio (default: enabled, use --no-speaker-clustering to disable)'
+    )
+
+    parser.add_argument(
+        '--no-speaker-clustering',
+        dest='speaker_clustering',
+        action='store_false',
+        help='Disable speaker clustering, use single fragment as reference'
+    )
+
+    parser.add_argument(
+        '--clustering-threshold',
+        type=float,
+        default=0.65,
+        metavar='THRESHOLD',
+        help='Speaker clustering threshold 0-1 (default: 0.65). Lower = more speakers, higher = fewer speakers. Recommended: 0.5-0.7'
+    )
+
     # Optional output directory
     parser.add_argument(
         '--output',
@@ -1749,7 +1894,9 @@ See http://localhost:8000/languages for full list of supported languages.
                 output_dir=args.output,
                 api_url=args.api_url,
                 seed=args.seed,
-                verbose=args.verbose
+                verbose=args.verbose,
+                speaker_clustering=args.speaker_clustering,
+                clustering_threshold=args.clustering_threshold
             )
         except KeyboardInterrupt:
             print_error("\n\nInterrupted by user")
