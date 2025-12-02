@@ -1257,6 +1257,7 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
     print_info(f"Target language (synthesized speech): {target_lang}")
 
     if output_dir:
+        output_dir = Path(output_dir)
         print_info(f"Output directory: {output_dir}")
     else:
         # Default output same directory as SRT file
@@ -1344,14 +1345,13 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
     try:
         # Step 0.5: Speaker Clustering (if enabled)
         speaker_clusters = None
-        speaker_references = {}
 
         if speaker_clustering:
             try:
                 from speaker_clustering import SpeakerClusterer
 
                 print_header("Step 0.5/4: Speaker Clustering")
-                print_info("Analyzing speaker identities for better voice cloning...")
+                print_info("Analyzing speaker identities for dynamic reference selection...")
 
                 clusterer = SpeakerClusterer(
                     method='resemblyzer',
@@ -1371,7 +1371,6 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
                     if (cache_data.get('threshold') == clustering_threshold and
                         cache_data.get('num_fragments') == len(timeline)):
                         speaker_clusters = cache_data['clusters']
-                        speaker_references = cache_data['reference_files']
                         print_success(f"Loaded {len(speaker_clusters)} speakers from cache")
                     else:
                         print_info("Cache invalid (threshold or fragment count changed), reclustering...")
@@ -1386,50 +1385,21 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
                         print_warning(f"Detected {len(speaker_clusters)} speakers (unusually high)")
                         print_info("Consider increasing threshold (e.g., --clustering-threshold 0.7)")
 
-                    # Generate reference audio for each speaker
-                    ref_dir = cache_dir / 'speaker_references'
-                    ref_dir.mkdir(exist_ok=True)
-
-                    print_info("Generating reference audio for each speaker...")
-                    for speaker_id in sorted(speaker_clusters.keys()):
-                        cluster = speaker_clusters[speaker_id]
-                        selected_files = clusterer.select_reference_fragments(
-                            cluster,
-                            max_duration=30.0
-                        )
-
-                        if len(selected_files) == 0:
-                            print_warning(f"{speaker_id}: No valid fragments, skipping")
-                            continue
-
-                        ref_path = ref_dir / f"{speaker_id}_ref.wav"
-                        clusterer.concatenate_fragments(selected_files, Path(fragments_dir), ref_path)
-
-                        # Calculate total duration
-                        import soundfile as sf
-                        audio, sr = sf.read(ref_path)
-                        duration = len(audio) / sr
-
-                        speaker_references[speaker_id] = str(ref_path.relative_to(cache_dir))
-                        frag_count = len(cluster)
-                        selected_count = len(selected_files)
-                        print_info(f"  {speaker_id}: {frag_count} fragments → {selected_count} selected ({duration:.1f}s reference)")
-
-                    # Save cache
+                    # Save cache (clusters only, no pre-generated references)
                     import json
                     cache_data = {
                         'method': 'resemblyzer',
                         'threshold': clustering_threshold,
                         'num_speakers': len(speaker_clusters),
                         'num_fragments': len(timeline),
-                        'clusters': speaker_clusters,
-                        'reference_files': speaker_references
+                        'clusters': speaker_clusters
                     }
 
                     with open(cache_file, 'w') as f:
                         json.dump(cache_data, f, indent=2)
 
-                    print_success(f"Detected {len(speaker_clusters)} speakers, cached results")
+                    print_success(f"Detected {len(speaker_clusters)} speakers")
+                    print_info("Reference audio will be selected dynamically for each segment")
 
             except ImportError:
                 print_warning("Resemblyzer not installed, falling back to single-fragment reference")
@@ -1492,24 +1462,70 @@ def process_trans_voice(input_file, srt_file, source_lang, target_lang, output_d
 
                 # Determine reference audio path
                 ref_audio_path = fragment_path  # Default: single fragment
+                ref_files_list = [best_match['file']]  # For logging
 
-                # Use speaker-clustered reference if available
-                if speaker_clustering and speaker_clusters and speaker_references:
+                # Use dynamic speaker-clustered reference if available
+                if speaker_clustering and speaker_clusters:
                     try:
                         from speaker_clustering import SpeakerClusterer
                         clusterer = SpeakerClusterer()
 
-                        # Find which speaker this segment belongs to
-                        speaker_id = clusterer.assign_speaker_to_segment(
+                        # Dynamic reference selection per segment
+                        speaker_id, ref_files, ref_duration = clusterer.select_reference_for_segment(
                             {'start': sub_start, 'end': sub_end},
-                            speaker_clusters
+                            speaker_clusters,
+                            Path(fragments_dir),
+                            min_duration=5.0,
+                            target_duration=10.0
                         )
 
-                        if speaker_id and speaker_id in speaker_references:
-                            # Use concatenated speaker reference
-                            ref_audio_path = str(cache_dir / speaker_references[speaker_id])
+                        if speaker_id and ref_files and len(ref_files) > 0:
+                            # Need to concatenate if multiple files
+                            if len(ref_files) == 1:
+                                # Single file reference
+                                ref_audio_path = os.path.join(fragments_dir, ref_files[0])
+                                ref_files_list = ref_files
+                            else:
+                                # Multiple files - create temporary concatenated reference
+                                import tempfile
+                                import soundfile as sf
+                                import numpy as np
+
+                                # Create temp reference audio file
+                                temp_ref_dir = cache_dir / 'temp_references'
+                                temp_ref_dir.mkdir(exist_ok=True)
+
+                                temp_ref_file = temp_ref_dir / f"ref_{i:04d}_{speaker_id}.wav"
+
+                                # Load and concatenate reference fragments
+                                audio_segments = []
+                                sample_rate = None
+
+                                for ref_file in ref_files:
+                                    ref_path = Path(fragments_dir) / ref_file
+                                    if ref_path.exists():
+                                        audio, sr = sf.read(ref_path)
+                                        if sample_rate is None:
+                                            sample_rate = sr
+                                        elif sr != sample_rate:
+                                            continue  # Skip mismatched sample rate
+                                        if len(audio.shape) > 1:
+                                            audio = audio.mean(axis=1)
+                                        audio_segments.append(audio)
+
+                                if audio_segments and sample_rate:
+                                    concatenated = np.concatenate(audio_segments)
+                                    sf.write(temp_ref_file, concatenated, sample_rate)
+                                    ref_audio_path = str(temp_ref_file)
+                                    ref_files_list = ref_files
+
+                            if verbose:
+                                print_info(f"  Segment {i}: Using {len(ref_files_list)} fragment(s) as reference ({ref_duration:.1f}s)")
+
                     except Exception as e:
                         # Fallback to single fragment on error
+                        if verbose:
+                            print_warning(f"  Segment {i}: Dynamic reference failed ({e}), using single fragment")
                         pass
 
                 if os.path.exists(ref_audio_path):
