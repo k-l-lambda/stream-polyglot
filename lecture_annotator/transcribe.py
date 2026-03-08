@@ -277,13 +277,91 @@ def _transcribe_m4t(
     language: Optional[str],
     api_url: str,
 ) -> list[dict]:
-    """Transcribe via m4t API, splitting long audio into chunks."""
+    """Transcribe via m4t API using VAD-based sentence segmentation.
+
+    Reuses the project's existing audio_timeline.segment_with_timeline()
+    for VAD-based speech detection, then transcribes each speech fragment
+    via m4t /v1/transcribe. This produces SRT entries aligned to natural
+    sentence/phrase boundaries instead of arbitrary fixed-time chunks.
+
+    Falls back to fixed-chunk splitting if audio_timeline is unavailable
+    or VAD fails.
+    """
     duration = _probe_duration(audio_path)
     if duration <= 0:
-        duration = _M4T_CHUNK_SECS  # fallback: treat as single chunk
+        duration = _M4T_CHUNK_SECS
 
+    # Try VAD-based segmentation (reuse project's existing module)
+    try:
+        # Import from the project root (audio_timeline.py)
+        import sys as _sys
+        _project_root = str(Path(__file__).resolve().parent.parent)
+        if _project_root not in _sys.path:
+            _sys.path.insert(0, _project_root)
+        from audio_timeline import segment_with_timeline
+
+        logger.info("m4t: using VAD segmentation (audio_timeline) for %s (%.1fs)", audio_path.name, duration)
+
+        with tempfile.TemporaryDirectory() as vad_tmpdir:
+            timeline, metadata = segment_with_timeline(
+                str(audio_path), vad_tmpdir,
+                chunk_duration=30.0,
+                m4t_api_url=api_url,
+                save_timeline=False,
+            )
+            logger.info("VAD: %d speech segments detected", len(timeline))
+
+            if not timeline:
+                logger.warning("VAD returned no segments, falling back to fixed chunks")
+                return _transcribe_m4t_fixed_chunks(audio_path, language=language, api_url=api_url, duration=duration)
+
+            # Transcribe each VAD fragment
+            segments: list[dict] = []
+            for i, frag in enumerate(timeline):
+                frag_path = Path(vad_tmpdir) / frag["file"]
+                if not frag_path.exists():
+                    logger.warning("Fragment %d missing: %s", i, frag["file"])
+                    continue
+
+                logger.info(
+                    "Transcribing %d/%d (%.1f–%.1fs) …",
+                    i + 1, len(timeline), frag["start"], frag["end"],
+                )
+                try:
+                    result = _transcribe_chunk_m4t(frag_path, api_url, language)
+                except Exception as exc:
+                    logger.warning("Segment %d/%d transcription failed: %s", i + 1, len(timeline), exc)
+                    continue
+
+                text = result.get("output_text", "").strip()
+                if text:
+                    segments.append({
+                        "start": frag["start"],
+                        "end": frag["end"],
+                        "text": text,
+                    })
+
+            logger.info("m4t (VAD): %d transcribed segments from %d fragments", len(segments), len(timeline))
+            return segments
+
+    except ImportError:
+        logger.info("audio_timeline not importable, falling back to fixed-chunk splitting")
+    except Exception as exc:
+        logger.warning("VAD segmentation failed (%s), falling back to fixed chunks", exc)
+
+    return _transcribe_m4t_fixed_chunks(audio_path, language=language, api_url=api_url, duration=duration)
+
+
+def _transcribe_m4t_fixed_chunks(
+    audio_path: Path,
+    *,
+    language: Optional[str],
+    api_url: str,
+    duration: float,
+) -> list[dict]:
+    """Fallback: transcribe via m4t with fixed-size chunk splitting."""
     num_chunks = max(1, math.ceil(duration / _M4T_CHUNK_SECS))
-    logger.info("m4t transcribing %s (%.1fs, %d chunks) …", audio_path.name, duration, num_chunks)
+    logger.info("m4t fixed-chunk: %s (%.1fs, %d chunks)", audio_path.name, duration, num_chunks)
 
     segments: list[dict] = []
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -302,7 +380,6 @@ def _transcribe_m4t(
                 logger.warning("Chunk %d/%d failed: %s", i + 1, num_chunks, exc)
                 continue
 
-            # m4t returns output_text (no segment-level timestamps)
             text = result.get("output_text", "").strip()
             if text:
                 chunk_duration = result.get("input_duration") or _M4T_CHUNK_SECS
@@ -312,7 +389,7 @@ def _transcribe_m4t(
                     "text": text,
                 })
 
-    logger.info("m4t: %d total segments", len(segments))
+    logger.info("m4t (fixed): %d total segments", len(segments))
     return segments
 
 

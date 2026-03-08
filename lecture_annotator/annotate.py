@@ -36,7 +36,7 @@ DEFAULT_BASE_URL = "https://api.ppinfra.com/v3/openai"
 DEFAULT_MODEL = "pa/gemini-3.1-pro-preview"
 DEFAULT_API_KEY_ENV = "PPIO_API_KEY"
 PARAGRAPH_GAP_SECONDS = 5.0  # gap threshold to split paragraphs
-MAX_PARAGRAPH_DURATION = 300.0  # force-split paragraphs longer than 5 minutes
+MAX_PARAGRAPH_DURATION = 300.0  # fallback: force-split if no sentence boundaries found
 MAX_FRAMES_PER_PARAGRAPH = 3  # send up to 3 screenshots per paragraph to LLM
 
 SYSTEM_PROMPT = (
@@ -261,13 +261,13 @@ def _group_into_paragraphs(
     """
     Merge consecutive subtitle entries into semantic paragraphs.
 
-    A new paragraph starts when:
-      1. The gap between the end of the previous entry and the start of the
-         next exceeds *gap_threshold* seconds, OR
-      2. The current paragraph duration would exceed *max_duration* seconds.
-
-    The max_duration fallback ensures paragraphs don't grow unbounded when
-    ASR produces continuous output with zero gaps (e.g., Whisper 60s chunks).
+    Relies on the SRT having natural sentence-level boundaries (e.g., from
+    VAD-based segmentation). Groups consecutive subtitles into paragraphs
+    using:
+      1. Gap-based splitting: a new paragraph starts when the gap between
+         consecutive subtitles exceeds *gap_threshold* seconds.
+      2. Duration fallback: force-split when accumulated duration exceeds
+         *max_duration* (catches degenerate SRT with no gaps).
 
     Returns list of dicts:
         {start, end, text, subtitle_count}
@@ -284,16 +284,21 @@ def _group_into_paragraphs(
         paragraphs.append({
             "start": cur_start,
             "end": cur_end,
-            "text": " ".join(cur_texts),
+            "text": "".join(cur_texts),
             "subtitle_count": len(cur_texts),
         })
 
     for sub in subtitles[1:]:
         gap = sub["start"] - cur_end
-        would_exceed = (sub["end"] - cur_start) > max_duration
+        cur_duration = cur_end - cur_start
 
-        if gap > gap_threshold or would_exceed:
-            # Flush current paragraph
+        start_new = False
+        if gap > gap_threshold:
+            start_new = True
+        elif cur_duration >= max_duration:
+            start_new = True
+
+        if start_new:
             _flush()
             cur_start = sub["start"]
             cur_end = sub["end"]
@@ -302,7 +307,6 @@ def _group_into_paragraphs(
             cur_end = sub["end"]
             cur_texts.append(sub["text"])
 
-    # Flush last
     _flush()
     return paragraphs
 
