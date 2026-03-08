@@ -71,6 +71,12 @@ examples:
         dest="whisper_model",
         help="Whisper model size: tiny, base, small, medium, large-v3 (default: base)",
     )
+    asr_group.add_argument(
+        "--m4t-url",
+        default=None,
+        dest="m4t_api_url",
+        help="m4t API URL (e.g. http://localhost:8001). Preferred over Whisper when available.",
+    )
 
     # Frame extraction options
     frame_group = parser.add_argument_group("frame extraction options")
@@ -178,6 +184,7 @@ examples:
             proxy=args.proxy,
             language=args.language,
             whisper_model=args.whisper_model,
+            m4t_api_url=args.m4t_api_url,
             frame_strategy=args.frame_strategy,
             frame_interval=args.frame_interval,
             max_frames=args.max_frames,

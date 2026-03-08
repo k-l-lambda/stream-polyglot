@@ -1,12 +1,19 @@
 """
-transcribe.py — Whisper ASR transcription to SRT subtitles.
+transcribe.py — ASR transcription to SRT subtitles.
 
-Supports both ``openai-whisper`` and ``faster-whisper`` as backends.
-Automatically detects which is installed and falls back gracefully.
+Backends (in priority order):
+  1. m4t API  — SeamlessM4T via local Docker service (fastest, no model download)
+  2. openai-whisper — official OpenAI library
+  3. faster-whisper — CTranslate2-based
 
 Usage:
     from lecture_annotator.transcribe import transcribe_audio
 
+    # Use m4t API (preferred)
+    srt_path = transcribe_audio("/tmp/output/lecture.wav", "/tmp/output",
+                                m4t_api_url="http://localhost:8001")
+
+    # Use Whisper (fallback)
     srt_path = transcribe_audio("/tmp/output/lecture.wav", "/tmp/output")
     print(srt_path)  # /tmp/output/lecture.srt
 """
@@ -14,9 +21,14 @@ Usage:
 from __future__ import annotations
 
 import logging
+import math
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +210,122 @@ def _transcribe_faster_whisper(
 
 
 # ---------------------------------------------------------------------------
+# m4t API backend
+# ---------------------------------------------------------------------------
+
+_M4T_CHUNK_SECS = 60.0  # split long audio into chunks for m4t
+
+# Map ISO 639-1 codes to m4t language codes (Flores-200 / ISO 639-3)
+_LANG_TO_M4T = {
+    "zh": "cmn",
+    "en": "eng",
+    "ja": "jpn",
+    "ko": "kor",
+    "fr": "fra",
+    "de": "deu",
+    "es": "spa",
+    "ru": "rus",
+    "ar": "arb",
+    "pt": "por",
+}
+
+
+def _probe_duration(audio_path: Path) -> float:
+    """Get audio duration via ffprobe."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_entries", "format=duration", str(audio_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        import json
+        return float(json.loads(r.stdout).get("format", {}).get("duration", 0))
+    except Exception:
+        return 0.0
+
+
+def _split_audio_chunk(audio_path: Path, start: float, duration: float, out_path: Path) -> bool:
+    """Cut a chunk from audio using ffmpeg."""
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-ss", str(start), "-t", str(duration),
+         "-i", str(audio_path), "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+         str(out_path)],
+        capture_output=True, timeout=60,
+    )
+    return r.returncode == 0
+
+
+def _transcribe_chunk_m4t(chunk_path: Path, api_url: str, language: Optional[str]) -> dict:
+    """Call m4t /v1/transcribe on one chunk, return result dict."""
+    m4t_lang = _LANG_TO_M4T.get(language, language) if language else "cmn"
+    with open(chunk_path, "rb") as f:
+        resp = requests.post(
+            f"{api_url.rstrip('/')}/v1/transcribe",
+            files={"audio": ("chunk.wav", f, "audio/wav")},
+            data={"language": m4t_lang},
+            timeout=300,
+        )
+    resp.raise_for_status()
+    result = resp.json()
+    # m4t returns {"output_text": "...", "input_duration": ..., ...}
+    return result
+
+
+def _transcribe_m4t(
+    audio_path: Path,
+    *,
+    language: Optional[str],
+    api_url: str,
+) -> list[dict]:
+    """Transcribe via m4t API, splitting long audio into chunks."""
+    duration = _probe_duration(audio_path)
+    if duration <= 0:
+        duration = _M4T_CHUNK_SECS  # fallback: treat as single chunk
+
+    num_chunks = max(1, math.ceil(duration / _M4T_CHUNK_SECS))
+    logger.info("m4t transcribing %s (%.1fs, %d chunks) …", audio_path.name, duration, num_chunks)
+
+    segments: list[dict] = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i in range(num_chunks):
+            start = i * _M4T_CHUNK_SECS
+            chunk_path = Path(tmpdir) / f"chunk_{i:04d}.wav"
+            ok = _split_audio_chunk(audio_path, start, _M4T_CHUNK_SECS, chunk_path)
+            if not ok or not chunk_path.exists():
+                logger.warning("Chunk %d/%d: ffmpeg split failed, skipping", i + 1, num_chunks)
+                continue
+
+            logger.info("Chunk %d/%d (%.0f–%.0fs) …", i + 1, num_chunks, start, start + _M4T_CHUNK_SECS)
+            try:
+                result = _transcribe_chunk_m4t(chunk_path, api_url, language)
+            except Exception as exc:
+                logger.warning("Chunk %d/%d failed: %s", i + 1, num_chunks, exc)
+                continue
+
+            # m4t returns output_text (no segment-level timestamps)
+            text = result.get("output_text", "").strip()
+            if text:
+                chunk_duration = result.get("input_duration") or _M4T_CHUNK_SECS
+                segments.append({
+                    "start": start,
+                    "end": min(start + chunk_duration, duration),
+                    "text": text,
+                })
+
+    logger.info("m4t: %d total segments", len(segments))
+    return segments
+
+
+def check_m4t_health(api_url: str, timeout: float = 5.0) -> bool:
+    """Return True if the m4t API is healthy."""
+    try:
+        r = requests.get(f"{api_url.rstrip('/')}/health", timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Model size fallback logic
 # ---------------------------------------------------------------------------
 
@@ -230,12 +358,16 @@ def transcribe_audio(
     *,
     language: Optional[str] = None,
     model_size: str = "large-v3",
+    m4t_api_url: Optional[str] = None,
 ) -> str:
-    """Transcribe an audio file to SRT subtitles using Whisper.
+    """Transcribe an audio file to SRT subtitles.
 
-    Automatically selects between ``openai-whisper`` and ``faster-whisper``
-    depending on what is installed. If neither is available, raises
-    ``ImportError`` with installation instructions.
+    Backend priority:
+      1. m4t API (if ``m4t_api_url`` is given and the service is healthy)
+      2. openai-whisper (if installed)
+      3. faster-whisper (if installed)
+
+    If m4t_api_url is not given, falls back to Whisper automatically.
 
     Args:
         audio_path: Path to the input audio file (WAV recommended,
@@ -262,9 +394,6 @@ def transcribe_audio(
         srt = transcribe_audio("/tmp/lecture.wav", "/tmp/output", language="zh")
         print(srt)  # /tmp/output/lecture.srt
     """
-    backend = _check_backend()
-    logger.info("Using backend: %s", backend)
-
     audio_path = Path(audio_path)
     if not audio_path.is_file():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
@@ -272,11 +401,26 @@ def transcribe_audio(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- Choose backend ---
+    use_m4t = False
+    if m4t_api_url:
+        if check_m4t_health(m4t_api_url):
+            use_m4t = True
+            logger.info("Using backend: m4t API (%s)", m4t_api_url)
+        else:
+            logger.warning("m4t API not reachable at %s, falling back to Whisper", m4t_api_url)
+
+    if not use_m4t:
+        backend = _check_backend()
+        logger.info("Using backend: %s", backend)
+
     model_size = _resolve_model_size(model_size)
 
     # --- Transcribe ---
     try:
-        if backend == "openai-whisper":
+        if use_m4t:
+            segments = _transcribe_m4t(audio_path, language=language, api_url=m4t_api_url)
+        elif backend == "openai-whisper":
             segments = _transcribe_openai_whisper(
                 audio_path, language=language, model_size=model_size,
             )

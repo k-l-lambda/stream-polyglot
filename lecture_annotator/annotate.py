@@ -14,6 +14,7 @@ import glob
 import logging
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -35,7 +36,8 @@ DEFAULT_BASE_URL = "https://api.ppinfra.com/v3/openai"
 DEFAULT_MODEL = "pa/gemini-3.1-pro-preview"
 DEFAULT_API_KEY_ENV = "PPIO_API_KEY"
 PARAGRAPH_GAP_SECONDS = 5.0  # gap threshold to split paragraphs
-MAX_FRAMES_PER_PARAGRAPH = 1  # default: send at most 1 screenshot per paragraph
+MAX_PARAGRAPH_DURATION = 300.0  # force-split paragraphs longer than 5 minutes
+MAX_FRAMES_PER_PARAGRAPH = 3  # send up to 3 screenshots per paragraph to LLM
 
 SYSTEM_PROMPT = (
     "你是一位理论物理/技术课程讲解专家。"
@@ -137,18 +139,135 @@ def _image_to_base64_url(image_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Paragraph-start frame extraction
+# ---------------------------------------------------------------------------
+
+
+def _extract_paragraph_start_frame(
+    video_path: str,
+    time_secs: float,
+    output_path: str,
+) -> bool:
+    """Extract a single frame at *time_secs* using ffmpeg. Returns True on success."""
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", f"{time_secs:.3f}",
+        "-i", video_path,
+        "-frames:v", "1",
+        "-q:v", "2",
+        output_path,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=True,
+        )
+        return os.path.isfile(output_path) and os.path.getsize(output_path) > 0
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.warning("ffmpeg failed for paragraph-start frame at t=%.1f: %s", time_secs, exc)
+        return False
+
+
+def _ensure_paragraph_frames(
+    paragraphs: List[Dict],
+    frames_index: List[tuple],
+    frames_dir: str,
+    video_path: str,
+    max_frames_per_paragraph: int = MAX_FRAMES_PER_PARAGRAPH,
+) -> List[tuple]:
+    """
+    Ensure every paragraph has at least one frame by extracting a screenshot
+    at the paragraph start time when no existing frame covers it.
+
+    Updates frames_index in-place and returns the updated index.
+
+    Args:
+        paragraphs: List of paragraph dicts with 'start' and 'end' keys.
+        frames_index: Sorted list of (timestamp, path) from existing frames.
+        frames_dir: Directory to save newly extracted frames.
+        video_path: Path to the source video (for ffmpeg extraction).
+        max_frames_per_paragraph: Threshold — only extract if paragraph has
+            fewer frames than this.
+
+    Returns:
+        Updated frames_index (sorted).
+    """
+    if not video_path or not os.path.isfile(video_path):
+        logger.warning("No video_path available — cannot extract paragraph-start frames")
+        return frames_index
+
+    os.makedirs(frames_dir, exist_ok=True)
+    new_frames: List[tuple] = []
+
+    for para in paragraphs:
+        start = para["start"]
+        end = para["end"]
+
+        # Count existing frames in this paragraph's range
+        existing = [path for ts, path in frames_index if start <= ts <= end]
+
+        if len(existing) >= max_frames_per_paragraph:
+            continue  # already has enough frames
+
+        # Check if there's already a frame within 3 seconds of paragraph start
+        has_start_frame = any(
+            abs(ts - start) < 3.0 for ts, _ in frames_index
+        )
+        if has_start_frame:
+            continue
+
+        # Extract frame at paragraph start
+        fname = f"frame_{start:08.1f}_parastart.jpg"
+        out_path = os.path.join(frames_dir, fname)
+
+        if os.path.isfile(out_path):
+            # Already extracted (maybe from a previous run)
+            new_frames.append((start, out_path))
+            logger.debug("Reusing existing paragraph-start frame: %s", fname)
+            continue
+
+        logger.info(
+            "Extracting paragraph-start frame at %.1fs → %s", start, fname
+        )
+        if _extract_paragraph_start_frame(video_path, start, out_path):
+            new_frames.append((start, out_path))
+        else:
+            logger.warning("Failed to extract paragraph-start frame at %.1fs", start)
+
+    if new_frames:
+        frames_index = list(frames_index) + new_frames
+        frames_index.sort(key=lambda x: x[0])
+        logger.info(
+            "Added %d paragraph-start frames (total frames: %d)",
+            len(new_frames), len(frames_index),
+        )
+
+    return frames_index
+
+
+# ---------------------------------------------------------------------------
 # SRT → paragraphs
 # ---------------------------------------------------------------------------
 
 def _group_into_paragraphs(
     subtitles: List[Dict],
     gap_threshold: float = PARAGRAPH_GAP_SECONDS,
+    max_duration: float = MAX_PARAGRAPH_DURATION,
 ) -> List[Dict]:
     """
     Merge consecutive subtitle entries into semantic paragraphs.
 
-    A new paragraph starts when the gap between the end of the previous
-    entry and the start of the next exceeds *gap_threshold* seconds.
+    A new paragraph starts when:
+      1. The gap between the end of the previous entry and the start of the
+         next exceeds *gap_threshold* seconds, OR
+      2. The current paragraph duration would exceed *max_duration* seconds.
+
+    The max_duration fallback ensures paragraphs don't grow unbounded when
+    ASR produces continuous output with zero gaps (e.g., Whisper 60s chunks).
 
     Returns list of dicts:
         {start, end, text, subtitle_count}
@@ -161,16 +280,21 @@ def _group_into_paragraphs(
     cur_end = subtitles[0]["end"]
     cur_texts: List[str] = [subtitles[0]["text"]]
 
+    def _flush():
+        paragraphs.append({
+            "start": cur_start,
+            "end": cur_end,
+            "text": " ".join(cur_texts),
+            "subtitle_count": len(cur_texts),
+        })
+
     for sub in subtitles[1:]:
         gap = sub["start"] - cur_end
-        if gap > gap_threshold:
+        would_exceed = (sub["end"] - cur_start) > max_duration
+
+        if gap > gap_threshold or would_exceed:
             # Flush current paragraph
-            paragraphs.append({
-                "start": cur_start,
-                "end": cur_end,
-                "text": " ".join(cur_texts),
-                "subtitle_count": len(cur_texts),
-            })
+            _flush()
             cur_start = sub["start"]
             cur_end = sub["end"]
             cur_texts = [sub["text"]]
@@ -179,12 +303,7 @@ def _group_into_paragraphs(
             cur_texts.append(sub["text"])
 
     # Flush last
-    paragraphs.append({
-        "start": cur_start,
-        "end": cur_end,
-        "text": " ".join(cur_texts),
-        "subtitle_count": len(cur_texts),
-    })
+    _flush()
     return paragraphs
 
 
@@ -405,7 +524,9 @@ def annotate_lecture(
     api_key: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     gap_threshold: float = PARAGRAPH_GAP_SECONDS,
+    max_paragraph_duration: float = MAX_PARAGRAPH_DURATION,
     max_frames_per_paragraph: int = MAX_FRAMES_PER_PARAGRAPH,
+    video_path: Optional[str] = None,
 ) -> str:
     """
     Annotate a lecture video using LLM analysis of subtitles and keyframes.
@@ -419,7 +540,10 @@ def annotate_lecture(
         api_key: API key; falls back to $PPIO_API_KEY env var.
         base_url: OpenAI-compatible API base URL.
         gap_threshold: Seconds of silence to start a new paragraph.
+        max_paragraph_duration: Force-split paragraphs exceeding this duration (seconds).
         max_frames_per_paragraph: Max screenshots to attach per LLM call.
+        video_path: Path to the source video file. When provided, paragraph-start
+            frames are automatically extracted for paragraphs that lack coverage.
 
     Returns:
         The absolute path of the generated Markdown file.
@@ -436,8 +560,15 @@ def annotate_lecture(
     logger.info("Found %d keyframe screenshots.", len(frames_index))
 
     # 3. Group into paragraphs
-    paragraphs = _group_into_paragraphs(subtitles, gap_threshold)
+    paragraphs = _group_into_paragraphs(subtitles, gap_threshold, max_paragraph_duration)
     logger.info("Grouped into %d paragraphs.", len(paragraphs))
+
+    # 3.5 Ensure every paragraph has at least one frame (extract at paragraph start)
+    if video_path:
+        frames_index = _ensure_paragraph_frames(
+            paragraphs, frames_index, frames_dir, video_path,
+            max_frames_per_paragraph=max_frames_per_paragraph,
+        )
 
     # 4. Prepare LLM client
     client = _get_client(api_key, base_url)
@@ -506,8 +637,12 @@ def main():
                         help=f"API key (default: ${DEFAULT_API_KEY_ENV} env)")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL,
                         help="API base URL")
+    parser.add_argument("--video", default=None,
+                        help="Source video path (enables paragraph-start frame extraction)")
     parser.add_argument("--gap", type=float, default=PARAGRAPH_GAP_SECONDS,
                         help="Paragraph gap threshold in seconds")
+    parser.add_argument("--max-paragraph-duration", type=float, default=MAX_PARAGRAPH_DURATION,
+                        help="Force-split paragraphs longer than this (seconds, default: 300)")
     parser.add_argument("--max-frames", type=int, default=MAX_FRAMES_PER_PARAGRAPH,
                         help="Max frames per paragraph")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -529,7 +664,9 @@ def main():
         api_key=args.api_key,
         base_url=args.base_url,
         gap_threshold=args.gap,
+        max_paragraph_duration=args.max_paragraph_duration,
         max_frames_per_paragraph=args.max_frames,
+        video_path=args.video,
     )
     print(f"✅ Done: {result}")
 

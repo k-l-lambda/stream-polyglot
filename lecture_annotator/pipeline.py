@@ -60,6 +60,7 @@ def run_pipeline(
     # Transcription options
     language: Optional[str] = None,
     whisper_model: str = "base",
+    m4t_api_url: Optional[str] = None,   # e.g. "http://localhost:8001"
     # Frame extraction options
     frame_strategy: str = "semantic",
     frame_interval: float = 60.0,
@@ -176,10 +177,11 @@ def run_pipeline(
 
         from .transcribe import transcribe_audio
 
-        logger.info("Transcribing: %s (model=%s, lang=%s)", audio_path, whisper_model, language)
+        logger.info("Transcribing: %s (model=%s, lang=%s, m4t=%s)", audio_path, whisper_model, language, m4t_api_url or "none")
         srt_path = transcribe_audio(
             audio_path, output_dir,
             language=language, model_size=whisper_model,
+            m4t_api_url=m4t_api_url,
         )
         result["srt"] = srt_path
         logger.info("  ✅ SRT: %s", srt_path)
@@ -249,6 +251,7 @@ def run_pipeline(
         model=annotate_model,
         api_key=api_key,
         base_url=PPIO_BASE_URL,
+        video_path=video_path,
     )
     result["annotation"] = annotation_path
     result["success"] = True

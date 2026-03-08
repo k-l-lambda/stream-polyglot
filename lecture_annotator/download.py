@@ -109,6 +109,8 @@ def _fetch_metadata(url: str, extra_args: list[str] | None = None) -> dict:
     """
     cmd = [
         _YTDLP_BIN, "--dump-json", "--no-playlist",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
         *(extra_args or []),
         url,
     ]
@@ -137,6 +139,8 @@ def _build_ytdlp_args(
     cmd = [
         _YTDLP_BIN,
         "--no-playlist",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
         "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best",
         "--merge-output-format", "mp4",
         "-o", output_template,
