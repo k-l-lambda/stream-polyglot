@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://api.ppinfra.com/v3/openai"
 DEFAULT_MODEL = "pa/gemini-3.1-pro-preview"
 DEFAULT_API_KEY_ENV = "PPIO_API_KEY"
-PARAGRAPH_GAP_SECONDS = 5.0  # gap threshold to split paragraphs
+PARAGRAPH_GAP_SECONDS = 3.0  # gap threshold to split paragraphs (tuned for VAD subtitles)
 MAX_PARAGRAPH_DURATION = 300.0  # fallback: force-split if no sentence boundaries found
 MAX_FRAMES_PER_PARAGRAPH = 3  # send up to 3 screenshots per paragraph to LLM
 

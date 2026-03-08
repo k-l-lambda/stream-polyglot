@@ -294,10 +294,9 @@ def _transcribe_m4t(
     # Try VAD-based segmentation (reuse project's existing module)
     try:
         # Import from the project root (audio_timeline.py)
-        import sys as _sys
         _project_root = str(Path(__file__).resolve().parent.parent)
-        if _project_root not in _sys.path:
-            _sys.path.insert(0, _project_root)
+        if _project_root not in sys.path:
+            sys.path.insert(0, _project_root)
         from audio_timeline import segment_with_timeline
 
         logger.info("m4t: using VAD segmentation (audio_timeline) for %s (%.1fs)", audio_path.name, duration)
