@@ -254,6 +254,7 @@ def run_pipeline(
         api_key=api_key,
         base_url=LLM_BASE_URL,
         video_path=video_path,
+        video_url=url,
     )
     result["annotation"] = annotation_path
     result["success"] = True

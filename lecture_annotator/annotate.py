@@ -462,6 +462,7 @@ def _build_markdown(
     frame_map: List[List[str]],
     frames_dir: str,
     output_path: str,
+    video_url: str = "",
 ) -> str:
     """Assemble the final Markdown document."""
     lines: List[str] = []
@@ -469,7 +470,10 @@ def _build_markdown(
     # Title
     title = video_title or "课程讲义"
     lines.append(f"# {title}\n")
-    lines.append(f"> 自动生成的课程注解文档（共 {len(paragraphs)} 个段落）\n")
+    meta_parts = [f"共 {len(paragraphs)} 个段落"]
+    if video_url:
+        meta_parts.append(f"[原始视频]({video_url})")
+    lines.append(f"> 自动生成的课程注解文档（{'，'.join(meta_parts)}）\n")
 
     # Table of contents
     lines.append("## 目录\n")
@@ -531,6 +535,7 @@ def annotate_lecture(
     max_paragraph_duration: float = MAX_PARAGRAPH_DURATION,
     max_frames_per_paragraph: int = MAX_FRAMES_PER_PARAGRAPH,
     video_path: Optional[str] = None,
+    video_url: str = "",
 ) -> str:
     """
     Annotate a lecture video using LLM analysis of subtitles and keyframes.
@@ -548,6 +553,7 @@ def annotate_lecture(
         max_frames_per_paragraph: Max screenshots to attach per LLM call.
         video_path: Path to the source video file. When provided, paragraph-start
             frames are automatically extracted for paragraphs that lack coverage.
+        video_url: Original video URL (e.g. YouTube link). Recorded in output Markdown.
 
     Returns:
         The absolute path of the generated Markdown file.
@@ -607,6 +613,7 @@ def annotate_lecture(
     # 6. Generate Markdown
     markdown = _build_markdown(
         video_title, paragraphs, annotations, frame_map, frames_dir, output_path,
+        video_url=video_url,
     )
 
     # 7. Write output
@@ -643,6 +650,8 @@ def main():
                         help="API base URL")
     parser.add_argument("--video", default=None,
                         help="Source video path (enables paragraph-start frame extraction)")
+    parser.add_argument("--url", default="",
+                        help="Original video URL (recorded in output Markdown)")
     parser.add_argument("--gap", type=float, default=PARAGRAPH_GAP_SECONDS,
                         help="Paragraph gap threshold in seconds")
     parser.add_argument("--max-paragraph-duration", type=float, default=MAX_PARAGRAPH_DURATION,
@@ -670,6 +679,7 @@ def main():
         gap_threshold=args.gap,
         max_paragraph_duration=args.max_paragraph_duration,
         max_frames_per_paragraph=args.max_frames,
+        video_url=args.url,
         video_path=args.video,
     )
     print(f"✅ Done: {result}")
