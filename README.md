@@ -266,7 +266,7 @@ python -m lecture_annotator "https://www.youtube.com/watch?v=VIDEO_ID" \
   -o ./output/my-lecture \
   -l zh \
   -m large-v3 \
-  --annotate-model pa/gemini-3.1-pro-preview
+  --annotate-model gpt-4o
 
 # From local video (skip download)
 python -m lecture_annotator --skip-download \
@@ -311,7 +311,7 @@ python -m lecture_annotator --skip-download --skip-transcribe --skip-frames \
 | `-l, --language` | auto | Whisper language code (`zh`, `en`, …) |
 | `-m, --model` | `base` | Whisper model size (`tiny`…`large-v3`) |
 | `--m4t-url` | — | m4t API URL (preferred over local Whisper) |
-| `--annotate-model` | `pa/gemini-3.1-pro-preview` | LLM for annotation |
+| `--annotate-model` | `$LLM_MODEL` or `gpt-4o` | LLM for annotation |
 | `--frame-strategy` | `semantic` | `semantic` / `uniform` / `scene` |
 | `--max-frames` | `50` | Maximum frames to extract |
 

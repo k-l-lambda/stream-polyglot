@@ -10,10 +10,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 
 def main():
+    # Load .env from project root
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(
         prog="lecture_annotator",
         description=(
@@ -103,13 +111,13 @@ examples:
     ann_group = parser.add_argument_group("annotation options")
     ann_group.add_argument(
         "--annotate-model",
-        default="pa/gemini-3.1-pro-preview",
-        help="LLM model for annotation (default: pa/gemini-3.1-pro-preview)",
+        default=os.environ.get("LLM_MODEL", "gpt-4o"),
+        help="LLM model for annotation (default: $LLM_MODEL or gpt-4o)",
     )
     ann_group.add_argument(
         "--api-key",
         default=None,
-        help="PPIO API key (default: $PPIO_API_KEY env var)",
+        help="LLM API key (default: $LLM_API_KEY env var)",
     )
 
     # Skip controls

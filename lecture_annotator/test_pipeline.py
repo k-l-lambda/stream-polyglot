@@ -77,7 +77,7 @@ def test_skip_all_mode():
                 skip_frames=True,
                 frames_dir=frames_dir,
                 api_key="test_dummy_key",
-                annotate_model="pa/gemini-3.1-pro-preview",
+                annotate_model="gpt-4o",
             )
             # If we get here, the full pipeline worked (unlikely without real API)
             print(f"✅ Full pipeline completed: {result}")

@@ -25,11 +25,11 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-PPIO_BASE_URL = "https://api.ppinfra.com/v3/openai"
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
 
 
 def _resolve_api_key(api_key: Optional[str] = None) -> str:
-    """Resolve PPIO API key: parameter > env var.
+    """Resolve LLM API key: parameter > env var.
 
     Args:
         api_key: Explicitly provided API key.
@@ -42,11 +42,11 @@ def _resolve_api_key(api_key: Optional[str] = None) -> str:
     """
     if api_key:
         return api_key
-    env_key = os.environ.get("PPIO_API_KEY", "")
+    env_key = os.environ.get("LLM_API_KEY", "")
     if env_key:
         return env_key
     raise ValueError(
-        "No PPIO API key found. Please set the PPIO_API_KEY environment variable "
+        "No LLM API key found. Please set the LLM_API_KEY environment variable "
         "or pass --api-key / api_key= parameter."
     )
 
@@ -66,7 +66,7 @@ def run_pipeline(
     frame_interval: float = 60.0,
     max_frames: int = 50,
     # Annotation options
-    annotate_model: str = "pa/gemini-3.1-pro-preview",
+    annotate_model: str = "",
     api_key: Optional[str] = None,
     # Control options
     skip_download: bool = False,
@@ -95,8 +95,8 @@ def run_pipeline(
         frame_strategy: Frame extraction strategy ('semantic', 'uniform', 'scene').
         frame_interval: Interval in seconds for 'uniform' strategy.
         max_frames: Maximum number of frames to extract.
-        annotate_model: LLM model identifier for annotation.
-        api_key: PPIO API key (falls back to env var / hardcoded).
+        annotate_model: LLM model identifier for annotation (falls back to $LLM_MODEL).
+        api_key: LLM API key (falls back to $LLM_API_KEY env var).
         skip_download: Skip download step (use video_path/audio_path instead).
         video_path: Path to existing video file (used with skip_download).
         audio_path: Path to existing audio file (used with skip_download).
@@ -128,6 +128,8 @@ def run_pipeline(
     }
 
     api_key = _resolve_api_key(api_key)
+    if not annotate_model:
+        annotate_model = os.environ.get("LLM_MODEL", "gpt-4o")
     title = ""  # will be set by download step if run
 
     # -----------------------------------------------------------------------
@@ -250,7 +252,7 @@ def run_pipeline(
         video_title=video_title,
         model=annotate_model,
         api_key=api_key,
-        base_url=PPIO_BASE_URL,
+        base_url=LLM_BASE_URL,
         video_path=video_path,
     )
     result["annotation"] = annotation_path

@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants / defaults
 # ---------------------------------------------------------------------------
-DEFAULT_BASE_URL = "https://api.ppinfra.com/v3/openai"
-DEFAULT_MODEL = "pa/gemini-3.1-pro-preview"
-DEFAULT_API_KEY_ENV = "PPIO_API_KEY"
+DEFAULT_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
+DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gpt-4o")
+DEFAULT_API_KEY_ENV = "LLM_API_KEY"
 PARAGRAPH_GAP_SECONDS = 3.0  # gap threshold to split paragraphs (tuned for VAD subtitles)
 MAX_PARAGRAPH_DURATION = 300.0  # fallback: force-split if no sentence boundaries found
 MAX_FRAMES_PER_PARAGRAPH = 3  # send up to 3 screenshots per paragraph to LLM
@@ -540,8 +540,8 @@ def annotate_lecture(
         frames_dir: Directory containing keyframe screenshots.
         output_path: Where to write the output Markdown file.
         video_title: Title for the generated document.
-        model: LLM model identifier (PPIO-compatible).
-        api_key: API key; falls back to $PPIO_API_KEY env var.
+        model: LLM model identifier (OpenAI-compatible).
+        api_key: API key; falls back to $LLM_API_KEY env var.
         base_url: OpenAI-compatible API base URL.
         gap_threshold: Seconds of silence to start a new paragraph.
         max_paragraph_duration: Force-split paragraphs exceeding this duration (seconds).
