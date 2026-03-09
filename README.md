@@ -11,6 +11,9 @@ Stream-Polyglot is a cross-platform video and audio translation application that
 - **Bilingual Subtitles**: Generate subtitles with both source and target languages
 - **Audio Dubbing**: Replace original audio with translated speech (text-to-speech in target language)
 - **Voice Cloning Translation**: Generate voice-cloned audio from bilingual SRT files using GPT-SoVITS
+- **🆕 Lecture Annotator**: End-to-end pipeline for lecture video annotation — download, transcribe, extract key frames, and generate structured notes with multimodal LLM
+- **🆕 Speaker Clustering**: Cluster audio segments by speaker identity using voice embeddings (resemblyzer)
+- **🆕 VAD-based Transcription**: Voice Activity Detection for sentence-level segmentation with checkpoint/resume support
 - **Multi-format Support**: Works with MP4, MKV, WebM, AVI, and various audio formats (WAV, MP3, FLAC, M4A, OGG)
 - **100+ Languages**: Supports speech input in 101 languages and text output in 96 languages via SeamlessM4T
 - **Cross-platform**: Runs on Windows, macOS, and Linux
@@ -18,32 +21,28 @@ Stream-Polyglot is a cross-platform video and audio translation application that
 ## Architecture
 
 ```
-┌─────────────────┐
-│  Video/Audio    │
-│  Input Files    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐     ┌──────────────────┐
-│  FFmpeg         │────▶│  m4t API Server  │
-│  Audio Extract  │     │  (SeamlessM4T)   │
-└─────────┬───────┘     └────────┬─────────┘
-          │                      │
-          │                      │
-          ▼                      ▼
-┌─────────────────┐     ┌──────────────────┐
-│  Subtitle       │     │  TTS (Optional)  │
-│  Generator      │     │  Audio Dubbing   │
-└─────────┬───────┘     └────────┬─────────┘
-          │                      │
-          └──────────┬───────────┘
-                     ▼
-          ┌──────────────────┐
-          │  Output:         │
-          │  - Subtitles     │
-          │  - Dubbed Audio  │
-          │  - Merged Video  │
-          └──────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        Stream-Polyglot                          │
+├─────────────────────────────┬───────────────────────────────────┤
+│   Translation Pipeline      │    Lecture Annotator Pipeline     │
+│                             │                                   │
+│  Video/Audio                │  YouTube URL / Local Video        │
+│       │                     │       │                           │
+│       ▼                     │       ▼                           │
+│  FFmpeg Audio Extract       │  yt-dlp Download                  │
+│       │                     │       │                           │
+│       ▼                     │       ▼                           │
+│  m4t API (SeamlessM4T)      │  Whisper / m4t ASR → SRT         │
+│       │                     │       │                           │
+│       ├──▶ Subtitles (SRT)  │       ▼                           │
+│       │    └▶ LLM Refiner   │  Key Frame Extraction (ffmpeg)    │
+│       │                     │       │                           │
+│       ├──▶ Voice Clone      │       ▼                           │
+│       │    (GPT-SoVITS)     │  Multimodal LLM Annotation        │
+│       │                     │       │                           │
+│       └──▶ Audio Dubbing    │       ▼                           │
+│            (TTS)            │  Structured Markdown Notes        │
+└─────────────────────────────┴───────────────────────────────────┘
 ```
 
 ## Technology Stack
@@ -257,6 +256,102 @@ python -m main video.mp4 --lang eng:cmn --subtitle --audio --split
 - m4t server must have Spleeter installed (`pip install spleeter`)
 - Audio splitting runs asynchronously in background (no processing delay)
 
+### Lecture Annotation (NEW)
+
+**End-to-end lecture video annotation**: Download a YouTube lecture → transcribe with Whisper/m4t → extract key frames → generate structured Markdown notes with multimodal LLM.
+
+```bash
+# Full pipeline from YouTube URL
+python -m lecture_annotator "https://www.youtube.com/watch?v=VIDEO_ID" \
+  -o ./output/my-lecture \
+  -l zh \
+  -m large-v3 \
+  --annotate-model pa/gemini-3.1-pro-preview
+
+# From local video (skip download)
+python -m lecture_annotator --skip-download \
+  --video ./lecture.mp4 --audio ./lecture.wav \
+  -o ./output/my-lecture -l zh -m large-v3
+
+# From existing SRT + video (skip download & transcription)
+python -m lecture_annotator --skip-download --skip-transcribe \
+  --video ./lecture.mp4 --srt ./lecture.srt \
+  -o ./output/my-lecture
+
+# Annotation only (have SRT + frames already)
+python -m lecture_annotator --skip-download --skip-transcribe --skip-frames \
+  --srt ./lecture.srt --frames ./frames/ \
+  -o ./output/my-lecture
+```
+
+**Pipeline stages:**
+
+| Stage | Module | Description |
+|-------|--------|-------------|
+| 1. Download | `download.py` | yt-dlp: YouTube → MP4 + 16kHz WAV |
+| 2. Transcribe | `transcribe.py` | Whisper / m4t API → SRT subtitles |
+| 3. Extract Frames | `extract_frames.py` | Semantic / uniform / scene-change → key frames |
+| 4. Annotate | `annotate.py` | Multimodal LLM (SRT + screenshots) → Markdown notes |
+
+**Frame extraction strategies:**
+- `semantic` (default): Extracts at formula, theorem, transition, or long-pause moments (SRT-driven)
+- `uniform`: Every N seconds
+- `scene`: ffmpeg scene-change detection
+
+**Output** — structured Markdown with:
+- Table of contents with timestamps
+- Collapsible original subtitles per paragraph
+- Embedded key frame screenshots
+- LLM-generated annotations (formula explanations, theoretical background, concept summaries)
+
+**Key options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-l, --language` | auto | Whisper language code (`zh`, `en`, …) |
+| `-m, --model` | `base` | Whisper model size (`tiny`…`large-v3`) |
+| `--m4t-url` | — | m4t API URL (preferred over local Whisper) |
+| `--annotate-model` | `pa/gemini-3.1-pro-preview` | LLM for annotation |
+| `--frame-strategy` | `semantic` | `semantic` / `uniform` / `scene` |
+| `--max-frames` | `50` | Maximum frames to extract |
+
+See [`lecture_annotator/README.md`](lecture_annotator/README.md) for full API documentation.
+
+### VAD-based Resume Transcription (NEW)
+
+For long lecture videos where transcription may be interrupted, use checkpoint-based resume:
+
+```bash
+# First run: transcribe with m4t API + VAD segmentation
+python resume_transcribe.py --start 0 --batch-size 50
+
+# If interrupted, resume from checkpoint automatically
+python resume_transcribe.py
+```
+
+Features:
+- VAD (Voice Activity Detection) for sentence-level fragment segmentation
+- Checkpoint file tracks progress — resume from where you left off
+- Configurable batch size and retry logic with exponential backoff
+- Outputs SRT with natural sentence boundaries (better than fixed-interval splitting)
+
+### Speaker Clustering (NEW)
+
+Cluster audio segments by speaker identity for multi-speaker videos:
+
+```python
+from speaker_clustering import cluster_speakers
+
+# Cluster audio fragments by speaker
+clusters = cluster_speakers(
+    fragments_dir="./cache/fragments/",
+    n_speakers=2,  # expected number of speakers
+)
+# Returns: {speaker_id: [fragment_paths]}
+```
+
+Uses resemblyzer voice embeddings + scikit-learn clustering.
+
 ### Generate Voice-Cloned Audio from Bilingual Subtitles
 
 **NEW FEATURE**: Generate voice-cloned audio using bilingual SRT subtitles with GPT-SoVITS voice cloning:
@@ -415,52 +510,67 @@ I'm doing great, thank you!
 
 ```
 stream-polyglot/
-├── README.md                 # This file
-├── requirements.txt          # Python dependencies
-├── setup.py                  # Package installation
-├── stream_polyglot/          # Main package
+├── README.md                   # This file
+├── requirements.txt            # Python dependencies
+├── main.py                     # Main CLI entry point (translation pipeline)
+├── audio_timeline.py           # Audio timeline + VAD segmentation
+├── speaker_clustering.py       # Speaker clustering via voice embeddings
+├── srt_utils.py                # SRT parsing/generation utilities
+├── resume_transcribe.py        # VAD-based checkpoint resume transcription
+│
+├── lecture_annotator/          # 🆕 Lecture annotation pipeline
 │   ├── __init__.py
-│   ├── video_processor.py    # FFmpeg integration
-│   ├── m4t_client.py         # m4t API client
-│   ├── subtitle_generator.py # SRT/VTT generation
-│   ├── translator.py         # Main orchestration
-│   └── utils.py              # Helper functions
-├── tests/                    # Unit tests
-│   ├── test_video_processor.py
-│   ├── test_m4t_client.py
-│   └── test_subtitle_generator.py
-└── examples/                 # Example scripts
-    ├── basic_translation.py
-    ├── batch_processing.py
-    └── advanced_dubbing.py
+│   ├── __main__.py             # CLI: python -m lecture_annotator
+│   ├── pipeline.py             # End-to-end orchestration
+│   ├── download.py             # YouTube download (yt-dlp)
+│   ├── transcribe.py           # Whisper / m4t ASR → SRT
+│   ├── extract_frames.py       # Key frame extraction (semantic/uniform/scene)
+│   ├── annotate.py             # Multimodal LLM annotation → Markdown
+│   ├── srt_utils.py            # SRT utilities (shared)
+│   └── README.md               # Detailed API documentation
+│
+├── subtitle-refiner/           # LLM-based subtitle refinement
+│
+├── output/                     # Pipeline output directory
+│   ├── liequn-24/              # Example: 李群李代数 第24讲 (Whisper)
+│   └── liequn-24-vad/          # Example: same lecture (VAD + m4t, higher quality)
+│
+├── tests/                      # Unit tests
+├── docs/                       # Documentation
+├── memo/                       # Development notes
+└── assets/                     # Static assets
 ```
 
 ## Roadmap
 
-### v0.1.0 (Current)
-- [x] Project initialization
-- [ ] FFmpeg video processor
-- [ ] m4t API client
-- [ ] Basic subtitle generation (SRT)
-- [ ] CLI interface
+### v0.1.0 — Core Translation ✅
+- [x] FFmpeg video/audio processing
+- [x] m4t API client (SeamlessM4T)
+- [x] SRT subtitle generation with accurate timestamps
+- [x] Bilingual subtitle support
+- [x] Audio VAD segmentation (audio_timeline.py)
+- [x] CLI interface (main.py)
 
-### v0.2.0
-- [ ] Audio dubbing functionality
-- [ ] WebVTT subtitle support
-- [ ] Batch processing
-- [ ] Progress tracking
+### v0.2.0 — Voice & Refinement ✅
+- [x] Audio dubbing with TTS
+- [x] Voice cloning via GPT-SoVITS
+- [x] LLM-based subtitle refinement (subtitle-refiner)
+- [x] Audio splitting (vocals/accompaniment via Spleeter)
+- [x] Speaker clustering (resemblyzer + scikit-learn)
 
-### v0.3.0
-- [ ] Multi-track subtitle support (MKV)
-- [ ] Subtitle timing adjustment
-- [ ] Audio/video synchronization
-- [ ] Configuration file support
+### v0.3.0 — Lecture Annotator ✅ (Current)
+- [x] YouTube download pipeline (yt-dlp, cookies/proxy support)
+- [x] Multi-backend ASR: Whisper (openai/faster) + m4t API
+- [x] Key frame extraction (semantic/uniform/scene strategies)
+- [x] Paragraph-start frame auto-extraction
+- [x] Multimodal LLM annotation (SRT + screenshots → Markdown)
+- [x] VAD-based resume transcription with checkpointing
 
-### v1.0.0
+### v1.0.0 — Future
 - [ ] GUI interface (Streamlit/Qt)
-- [ ] Advanced subtitle editing
-- [ ] Plugin system
-- [ ] Performance optimizations
+- [ ] WebVTT subtitle support
+- [ ] Batch processing for multiple videos
+- [ ] Real-time streaming translation
 
 ## Contributing
 
