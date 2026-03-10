@@ -408,6 +408,7 @@ def analyze_frame(
         ],
         max_tokens=2048,
         temperature=0.3,
+        timeout=180,
     )
     return response.choices[0].message.content or ""
 
@@ -472,6 +473,7 @@ def _annotate_paragraph(
                 ],
                 max_tokens=4096,
                 temperature=0.3,
+                timeout=180,
             )
             choices = response.choices
             if not choices:
