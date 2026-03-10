@@ -50,6 +50,8 @@ USER_PROMPT_TEMPLATE = """\
 
 {subtitle_text}
 
+请专注于当前段落中出现的**新内容、新概念、新公式**，已在之前段落解释过的概念不要重复。
+
 请针对这段内容：
 1. 识别并解释板书/PPT中出现的所有公式（逐一说明每个符号含义）
 2. 补充必要的理论背景知识
@@ -57,6 +59,11 @@ USER_PROMPT_TEMPLATE = """\
 4. 如有截图，描述截图中的板书内容
 
 如果这段内容没有公式或技术概念，则简要概括要点即可。"""
+
+PREVIOUS_CONTEXT_TEMPLATE = """
+以下是之前段落的注解内容（仅供参考上下文，请勿重复解释已解释过的概念）：
+
+{previous_context}"""
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +291,7 @@ def _group_into_paragraphs(
         paragraphs.append({
             "start": cur_start,
             "end": cur_end,
-            "text": "".join(cur_texts),
+            "text": "\n".join(cur_texts),
             "subtitle_count": len(cur_texts),
         })
 
@@ -308,7 +315,33 @@ def _group_into_paragraphs(
             cur_texts.append(sub["text"])
 
     _flush()
-    return paragraphs
+
+    # Merge short paragraphs (duration < 10s and subtitle_count < 3)
+    merged: List[Dict] = []
+    for para in paragraphs:
+        is_short = para["end"] - para["start"] < 10.0 and para["subtitle_count"] < 3
+        if is_short and merged:
+            # Merge into previous paragraph
+            prev = merged[-1]
+            prev["end"] = para["end"]
+            prev["text"] = prev["text"] + "\n" + para["text"]
+            prev["subtitle_count"] += para["subtitle_count"]
+        elif is_short and not merged:
+            # First paragraph is short — just append, will try to merge with next
+            merged.append(para)
+        else:
+            # Normal paragraph: check if previous was short and alone
+            if merged and merged[-1]["end"] - merged[-1]["start"] < 10.0 and merged[-1]["subtitle_count"] < 3:
+                # Previous was short first paragraph, merge it into this one
+                prev = merged[-1]
+                para["start"] = prev["start"]
+                para["text"] = prev["text"] + "\n" + para["text"]
+                para["subtitle_count"] += prev["subtitle_count"]
+                merged[-1] = para
+            else:
+                merged.append(para)
+
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -385,11 +418,15 @@ def _annotate_paragraph(
     frame_paths: List[str],
     model: str,
     max_retries: int = 3,
+    previous_annotations: Optional[List[str]] = None,
 ) -> str:
     """
     Call LLM to annotate a single paragraph, optionally with images.
 
     Retries up to *max_retries* times with exponential backoff on failure.
+
+    Args:
+        previous_annotations: Recent annotation texts for context (each truncated to 300 chars).
 
     Returns the annotation text (Markdown).
     """
@@ -404,6 +441,13 @@ def _annotate_paragraph(
         end=end_str,
         subtitle_text=paragraph["text"],
     )
+
+    # Append previous context if available
+    if previous_annotations:
+        context_parts = [ann[:300] for ann in previous_annotations]
+        previous_context = "\n\n---\n\n".join(context_parts)
+        prompt_text += PREVIOUS_CONTEXT_TEMPLATE.format(previous_context=previous_context)
+
     user_content.append({"type": "text", "text": prompt_text})
 
     # Attach images
@@ -598,7 +642,10 @@ def annotate_lecture(
         frame_map.append(frames)
 
         try:
-            annotation = _annotate_paragraph(client, para, frames, model)
+            annotation = _annotate_paragraph(
+                client, para, frames, model,
+                previous_annotations=annotations[-3:] if annotations else None,
+            )
         except Exception as exc:
             logger.error(
                 "Failed to annotate paragraph [%s ~ %s]: %s",
