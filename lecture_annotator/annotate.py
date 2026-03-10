@@ -545,8 +545,9 @@ def _build_markdown(
 
         # Original subtitle
         lines.append("<details><summary>📝 原始字幕</summary>\n")
-        subtitle_html = para["text"].replace("\n", "<br/>\n")
-        lines.append(f"{subtitle_html}\n")
+        lines.append("<pre>\n")
+        lines.append(f"{para['text']}\n")
+        lines.append("</pre>\n")
         lines.append("</details>\n")
 
         # Screenshots
