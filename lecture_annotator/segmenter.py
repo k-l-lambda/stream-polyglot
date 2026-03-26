@@ -2,7 +2,7 @@
 Transcript-wide lecture segmentation with titled paragraphs.
 
 Runs after SRT generation and before frame extraction / annotation.
-Uses an OpenAI-compatible model (default: gpt5.4) to segment the full
+Uses an OpenAI-compatible model (default: ppio-oai/pa/gpt-5.4) to segment the full
 transcript into paragraph-scale sections, typically 3–10 minutes each,
 and assigns a short title to every segment.
 """
@@ -20,7 +20,7 @@ from .srt_utils import format_srt_timestamp, parse_srt_file
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
-DEFAULT_SEGMENT_MODEL = "gpt5.4"
+DEFAULT_SEGMENT_MODEL = "ppio-oai/pa/gpt-5.4"
 DEFAULT_API_KEY_ENV = "LLM_API_KEY"
 TARGET_MIN_MINUTES = 3.0
 TARGET_MAX_MINUTES = 10.0
