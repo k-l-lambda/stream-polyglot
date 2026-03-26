@@ -21,6 +21,7 @@ from .download import download_video
 from .transcribe import transcribe_audio
 from .extract_frames import extract_key_frames
 from .annotate import annotate_lecture
+from .segmenter import segment_transcript
 
 __all__ = [
     "run_pipeline",
@@ -28,4 +29,5 @@ __all__ = [
     "transcribe_audio",
     "extract_key_frames",
     "annotate_lecture",
+    "segment_transcript",
 ]

@@ -525,7 +525,8 @@ def _build_markdown(
     lines.append("## 目录\n")
     for i, para in enumerate(paragraphs, 1):
         ts = _ts_readable(para["start"])
-        lines.append(f"- [{ts} 段落 {i}](#段落-{i})")
+        title = para.get("title", f"段落 {i}")
+        lines.append(f"- [{ts} {title}](#段落-{i})")
     lines.append("")
 
     lines.append("---\n")
@@ -540,7 +541,8 @@ def _build_markdown(
         start_str = _ts_readable(para["start"])
         end_str = _ts_readable(para["end"])
 
-        lines.append(f"## 段落 {i}\n")
+        title = para.get("title", f"段落 {i}")
+        lines.append(f"## 段落 {i}：{title}\n")
         lines.append(f"**时间：** {start_str} ~ {end_str}\n")
 
         # Original subtitle
@@ -584,6 +586,7 @@ def annotate_lecture(
     max_frames_per_paragraph: int = MAX_FRAMES_PER_PARAGRAPH,
     video_path: Optional[str] = None,
     video_url: str = "",
+    transcript_segments: Optional[List[Dict]] = None,
 ) -> str:
     """
     Annotate a lecture video using LLM analysis of subtitles and keyframes.
@@ -618,8 +621,12 @@ def annotate_lecture(
     logger.info("Found %d keyframe screenshots.", len(frames_index))
 
     # 3. Group into paragraphs
-    paragraphs = _group_into_paragraphs(subtitles, gap_threshold, max_paragraph_duration)
-    logger.info("Grouped into %d paragraphs.", len(paragraphs))
+    if transcript_segments:
+        paragraphs = [dict(seg) for seg in transcript_segments]
+        logger.info("Using %d transcript-wide segments from upstream segmentation.", len(paragraphs))
+    else:
+        paragraphs = _group_into_paragraphs(subtitles, gap_threshold, max_paragraph_duration)
+        logger.info("Grouped into %d paragraphs.", len(paragraphs))
 
     # 3.5 Ensure every paragraph has at least one frame (extract at paragraph start)
     if video_path:

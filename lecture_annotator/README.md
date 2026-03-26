@@ -8,6 +8,7 @@ YouTube 讲座视频下载 + Whisper ASR 转录子模块，属于 [stream-polygl
 |------|------|
 | `download.py` | 使用 yt-dlp 下载 YouTube 视频 (≤720p mp4) 并提取 16kHz mono WAV 音频 |
 | `transcribe.py` | 使用 Whisper (openai-whisper 或 faster-whisper) 生成 SRT 字幕 |
+| `segmenter.py` | 在 SRT 完成后，用 `gpt5.4` 通读全文，按 3–10 分钟原则做课程分段并生成小标题 |
 
 ## 安装依赖
 
@@ -52,6 +53,9 @@ python -m lecture_annotator.download "https://www.youtube.com/watch?v=VIDEO_ID" 
 
 # 2. 转录为 SRT
 python -m lecture_annotator.transcribe /tmp/lectures/video_title.wav -o /tmp/lectures -l zh -m large-v3
+
+# 3. 运行完整课程注释流水线（现会在 SRT 后自动做 transcript-wide segmentation）
+python -m lecture_annotator "https://www.youtube.com/watch?v=VIDEO_ID" -o /tmp/lectures --annotate-model gpt5.4
 ```
 
 ### Python API
@@ -138,6 +142,25 @@ print(srt_path)  # /tmp/lectures/Video_Title.srt
 - 如不可用，回退到 `faster-whisper`
 - 两者均未安装则抛出 `ImportError`
 
+## 新分段机制
+
+现在的课程注释流水线会在 SRT 生成后自动增加一个步骤：
+
+1. 读取整篇字幕
+2. 使用 `gpt5.4` 对全文进行一次通观式分段
+3. 为每个段落生成一个小标题
+4. 输出 `transcript_segments.json`
+5. 后续抽帧与注释都以这个 JSON 里的段落边界为准
+
+每个段落原则上控制在 **3–10 分钟**，但会优先服从课程内容结构。
+
+`transcript_segments.json` 中每段包含：
+- `start` / `end`
+- `start_ts` / `end_ts`
+- `title`
+- `text`
+- `start_subtitle_index` / `end_subtitle_index`
+
 ## 项目结构
 
 ```
@@ -145,6 +168,7 @@ lecture_annotator/
 ├── __init__.py       # 包初始化
 ├── download.py       # YouTube 下载 + 音频提取
 ├── transcribe.py     # Whisper ASR → SRT
+├── segmenter.py      # 全文分段 + 小标题（gpt5.4）
 └── README.md         # 本文件
 ```
 

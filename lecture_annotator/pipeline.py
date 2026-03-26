@@ -122,6 +122,7 @@ def run_pipeline(
         "video": video_path,
         "audio": audio_path,
         "srt": srt_path,
+        "segments": None,
         "frames_dir": frames_dir,
         "annotation": None,
         "success": False,
@@ -189,6 +190,28 @@ def run_pipeline(
         logger.info("  ✅ SRT: %s", srt_path)
 
     # -----------------------------------------------------------------------
+    # Step 2.5: Transcript-wide segmentation
+    # -----------------------------------------------------------------------
+    transcript_segments = None
+    logger.info("[2.5/4] Segment transcript with model=gpt5.4 …")
+    if not srt_path:
+        raise ValueError(
+            "srt_path is required for transcript segmentation. "
+            "Provide --srt or run transcription step first."
+        )
+    from .segmenter import load_segments_json, segment_transcript
+    segments_path = segment_transcript(
+        srt_path=srt_path,
+        output_dir=output_dir,
+        api_key=api_key,
+        base_url=LLM_BASE_URL,
+        model="gpt5.4",
+    )
+    transcript_segments = load_segments_json(segments_path)
+    result["segments"] = segments_path
+    logger.info("  ✅ Segments: %s (%d paragraphs)", segments_path, len(transcript_segments))
+
+    # -----------------------------------------------------------------------
     # Step 3: Extract key frames
     # -----------------------------------------------------------------------
     logger.info("[3/4] Extract key frames (strategy=%s) …", frame_strategy)
@@ -219,6 +242,7 @@ def run_pipeline(
             interval_secs=frame_interval,
             strategy=frame_strategy,
             max_frames=max_frames,
+            transcript_segments=transcript_segments,
         )
         frames_dir = frames_output
         result["frames_dir"] = frames_dir
@@ -255,6 +279,7 @@ def run_pipeline(
         base_url=LLM_BASE_URL,
         video_path=video_path,
         video_url=url,
+        transcript_segments=transcript_segments,
     )
     result["annotation"] = annotation_path
     result["success"] = True

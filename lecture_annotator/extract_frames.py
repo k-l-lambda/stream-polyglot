@@ -123,8 +123,13 @@ def _strategy_semantic(
     output_dir: str,
     srt_path: str,
     max_frames: int,
+    transcript_segments: Optional[list[dict]] = None,
 ) -> list[dict]:
-    """Extract frames at semantically important moments identified from SRT."""
+    """Extract frames at semantically important moments identified from SRT.
+
+    When transcript_segments are provided, paragraph-start signals come from the
+    canonical transcript-wide segmentation instead of subtitle-gap heuristics.
+    """
     if not srt_path or not os.path.isfile(srt_path):
         raise FileNotFoundError(f"SRT file not found: {srt_path}")
 
@@ -144,20 +149,42 @@ def _strategy_semantic(
         if _TRANSITION_KEYWORDS.search(text):
             reasons.append("transition")
 
-        # Gap detection: >3 s silence before this subtitle
-        if i > 0:
-            gap = entry["start"] - entries[i - 1]["end"]
-            if gap > 3.0:
-                reasons.append("paragraph")
+        if transcript_segments:
+            for seg in transcript_segments:
+                if abs(entry["start"] - float(seg.get("start", -9999))) < 2.0:
+                    reasons.append("parastart")
+                    break
+        else:
+            # Gap detection: >3 s silence before this subtitle
+            if i > 0:
+                gap = entry["start"] - entries[i - 1]["end"]
+                if gap > 3.0:
+                    reasons.append("paragraph")
 
         if reasons:
             candidates.append(
                 {
                     "time": entry["start"],
                     "subtitle": text,
-                    "reason": "+".join(reasons),
+                    "reason": "+".join(dict.fromkeys(reasons)),
                 }
             )
+
+    if transcript_segments:
+        existing_times = [c["time"] for c in candidates]
+        for seg in transcript_segments:
+            start = float(seg["start"])
+            if any(abs(start - t) < 2.0 for t in existing_times):
+                continue
+            candidates.append(
+                {
+                    "time": start,
+                    "subtitle": seg.get("title", ""),
+                    "reason": "parastart",
+                }
+            )
+
+    candidates.sort(key=lambda c: c["time"])
 
     # De-duplicate: keep at most one frame per 5-second window
     filtered: list[dict] = []
@@ -169,7 +196,6 @@ def _strategy_semantic(
 
     # Trim to max_frames
     if len(filtered) > max_frames:
-        # Evenly sample from candidates
         step = len(filtered) / max_frames
         filtered = [filtered[int(i * step)] for i in range(max_frames)]
 
@@ -330,6 +356,7 @@ def extract_key_frames(
     interval_secs: float = 60,
     strategy: str = "semantic",
     max_frames: int = 50,
+    transcript_segments: Optional[list[dict]] = None,
 ) -> list[dict]:
     """
     Extract key frames from a lecture video.
@@ -368,7 +395,13 @@ def extract_key_frames(
                 "Semantic strategy requested but no srt_path — falling back to uniform"
             )
             return _strategy_uniform(video_path, output_dir, interval_secs, max_frames)
-        return _strategy_semantic(video_path, output_dir, srt_path, max_frames)
+        return _strategy_semantic(
+            video_path,
+            output_dir,
+            srt_path,
+            max_frames,
+            transcript_segments=transcript_segments,
+        )
 
     elif strategy == "uniform":
         return _strategy_uniform(video_path, output_dir, interval_secs, max_frames)
