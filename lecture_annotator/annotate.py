@@ -420,6 +420,7 @@ def _annotate_paragraph(
     model: str,
     max_retries: int = 3,
     previous_annotations: Optional[List[str]] = None,
+    allow_images: bool = True,
 ) -> str:
     """
     Call LLM to annotate a single paragraph, optionally with images.
@@ -428,6 +429,7 @@ def _annotate_paragraph(
 
     Args:
         previous_annotations: Recent annotation texts for context (each truncated to 300 chars).
+        allow_images: Whether to include frame images in the request.
 
     Returns the annotation text (Markdown).
     """
@@ -452,15 +454,16 @@ def _annotate_paragraph(
     user_content.append({"type": "text", "text": prompt_text})
 
     # Attach images
-    for fpath in frame_paths:
-        try:
-            data_url = _image_to_base64_url(fpath)
-            user_content.append({
-                "type": "image_url",
-                "image_url": {"url": data_url},
-            })
-        except Exception as e:
-            logger.warning("Failed to encode image %s: %s", fpath, e)
+    if allow_images:
+        for fpath in frame_paths:
+            try:
+                data_url = _image_to_base64_url(fpath)
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url},
+                })
+            except Exception as e:
+                logger.warning("Failed to encode image %s: %s", fpath, e)
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
@@ -642,6 +645,8 @@ def annotate_lecture(
     annotations: List[str] = []
     frame_map: List[List[str]] = []
 
+    failed_count = 0
+
     for para in tqdm(paragraphs, desc="Annotating paragraphs", unit="para"):
         # Find frames in range
         frames = _frames_in_range(
@@ -656,15 +661,63 @@ def annotate_lecture(
             annotation = _annotate_paragraph(
                 client, para, frames, model,
                 previous_annotations=annotations[-3:] if annotations else None,
+                allow_images=bool(frames),
             )
         except Exception as exc:
-            logger.error(
-                "Failed to annotate paragraph [%s ~ %s]: %s",
+            logger.warning(
+                "Primary annotation failed for paragraph [%s ~ %s]: %s",
                 _ts_readable(para["start"]),
                 _ts_readable(para["end"]),
                 exc,
             )
-            annotation = f"⚠️ 注解失败: {exc}"
+            fallback_exc = exc
+            annotation = None
+
+            # Automatic fallback 1: retry with fewer images (first image only)
+            if len(frames) > 1:
+                try:
+                    logger.info(
+                        "Fallback retry with 1 image for paragraph [%s ~ %s]",
+                        _ts_readable(para["start"]),
+                        _ts_readable(para["end"]),
+                    )
+                    annotation = _annotate_paragraph(
+                        client, para, frames[:1], model,
+                        previous_annotations=annotations[-3:] if annotations else None,
+                        allow_images=True,
+                    )
+                except Exception as exc2:
+                    fallback_exc = exc2
+                    logger.warning(
+                        "1-image fallback failed for paragraph [%s ~ %s]: %s",
+                        _ts_readable(para["start"]),
+                        _ts_readable(para["end"]),
+                        exc2,
+                    )
+
+            # Automatic fallback 2: text-only annotation
+            if annotation is None:
+                try:
+                    logger.info(
+                        "Fallback retry with text-only prompt for paragraph [%s ~ %s]",
+                        _ts_readable(para["start"]),
+                        _ts_readable(para["end"]),
+                    )
+                    annotation = _annotate_paragraph(
+                        client, para, [], model,
+                        previous_annotations=annotations[-3:] if annotations else None,
+                        allow_images=False,
+                    )
+                except Exception as exc3:
+                    fallback_exc = exc3
+                    logger.error(
+                        "All annotation fallbacks failed for paragraph [%s ~ %s]: %s",
+                        _ts_readable(para["start"]),
+                        _ts_readable(para["end"]),
+                        exc3,
+                    )
+                    annotation = f"⚠️ 注解失败: {exc3}"
+                    failed_count += 1
 
         annotations.append(annotation)
 
@@ -680,7 +733,10 @@ def annotate_lecture(
         f.write(markdown)
 
     result_path = os.path.abspath(output_path)
-    logger.info("Annotation complete → %s", result_path)
+    if failed_count:
+        logger.warning("Annotation complete with %d failed paragraphs → %s", failed_count, result_path)
+    else:
+        logger.info("Annotation complete with no failed paragraphs → %s", result_path)
     return result_path
 
 
