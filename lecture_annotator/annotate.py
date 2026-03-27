@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants / defaults
 # ---------------------------------------------------------------------------
-DEFAULT_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
-DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gpt-4o")
-DEFAULT_API_KEY_ENV = "LLM_API_KEY"
+DEFAULT_BASE_URL = os.environ.get("LLM_BASE_URL")   # OpenAI-compatible API endpoint
+DEFAULT_MODEL = os.environ.get("LLM_MODEL")
+DEFAULT_API_KEY_ENV = os.environ.get("LLM_API_KEY_ENV", "LLM_API_KEY")
 PARAGRAPH_GAP_SECONDS = 3.0  # gap threshold to split paragraphs (tuned for VAD subtitles)
 MAX_PARAGRAPH_DURATION = 300.0  # fallback: force-split if no sentence boundaries found
 MAX_FRAMES_PER_PARAGRAPH = 3  # send up to 3 screenshots per paragraph to LLM

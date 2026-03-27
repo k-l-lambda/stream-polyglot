@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL")
 
 
 def _resolve_api_key(api_key: Optional[str] = None) -> str:
@@ -193,7 +193,7 @@ def run_pipeline(
     # Step 2.5: Transcript-wide segmentation
     # -----------------------------------------------------------------------
     transcript_segments = None
-    logger.info("[2.5/4] Segment transcript with model=ppio-oai/pa/gpt-5.4 …")
+    logger.info("[2.5/4] Segment transcript with model=pa/gpt-5.4 …")
     if not srt_path:
         raise ValueError(
             "srt_path is required for transcript segmentation. "
@@ -205,7 +205,7 @@ def run_pipeline(
         output_dir=output_dir,
         api_key=api_key,
         base_url=LLM_BASE_URL,
-        model="ppio-oai/pa/gpt-5.4",
+        model="pa/gpt-5.4",
     )
     transcript_segments = load_segments_json(segments_path)
     result["segments"] = segments_path
