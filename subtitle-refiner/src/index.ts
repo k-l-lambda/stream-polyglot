@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import fs from 'fs/promises';
 import path from 'path';
 import dotenv from 'dotenv';
+import dotenvExpand from 'dotenv-expand';
 import { parseSRT, generateSRT, isBilingual } from './parsers/srt-parser.js';
 import { SubtitleRefiner } from './refiners/llm-refiner.js';
 import { createProvider } from './refiners/providers/factory.js';
@@ -12,8 +13,8 @@ import { RefinerConfig } from './types.js';
 import { detectLanguagesFromFilename } from './utils/language-detector.js';
 import { checkpointExists, getCheckpointInfo } from './utils/checkpoint.js';
 
-// Load environment variables
-dotenv.config();
+// Load environment variables (with ${VAR} interpolation)
+dotenvExpand.expand(dotenv.config());
 
 const program = new Command();
 

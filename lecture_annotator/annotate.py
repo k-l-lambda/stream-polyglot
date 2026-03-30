@@ -12,10 +12,12 @@ from __future__ import annotations
 import base64
 import glob
 import logging
+import multiprocessing as mp
 import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -421,6 +423,7 @@ def _annotate_paragraph(
     max_retries: int = 3,
     previous_annotations: Optional[List[str]] = None,
     allow_images: bool = True,
+    hard_timeout: int = 210,
 ) -> str:
     """
     Call LLM to annotate a single paragraph, optionally with images.
@@ -468,20 +471,48 @@ def _annotate_paragraph(
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
+            logger.info(
+                "LLM request start: title=%r attempt=%d/%d text_chars=%d images=%d model=%s",
+                paragraph.get("title", ""), attempt, max_retries,
+                len(paragraph.get("text", "")), len(frame_paths) if allow_images else 0, model,
+            )
+            t_req = time.time()
+            ctx = mp.get_context("fork")
+            queue = ctx.Queue()
+            payload = {
+                "base_url": getattr(client, "base_url", None) or os.environ.get("LLM_BASE_URL"),
+                "api_key": getattr(client, "api_key", None) or os.environ.get(DEFAULT_API_KEY_ENV, ""),
+                "model": model,
+                "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=4096,
-                temperature=0.3,
-                timeout=180,
+                "max_tokens": 4096,
+                "temperature": 0.3,
+                "timeout": 180,
+            }
+            proc = ctx.Process(target=_chat_completion_worker, args=(payload, queue), daemon=True)
+            proc.start()
+            proc.join(timeout=hard_timeout)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=5)
+                raise TimeoutError(
+                    f"LLM request hard-timeout after {hard_timeout}s "
+                    f"(title={paragraph.get('title', '')!r}, images={len(frame_paths) if allow_images else 0})"
+                )
+            if queue.empty():
+                raise RuntimeError(
+                    f"LLM worker exited without result (title={paragraph.get('title', '')!r})"
+                )
+            result = queue.get()
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error", "unknown worker error"))
+            logger.info(
+                "LLM request done: title=%r attempt=%d/%d elapsed=%.1fs",
+                paragraph.get("title", ""), attempt, max_retries, time.time() - t_req,
             )
-            choices = response.choices
-            if not choices:
-                raise ValueError("API returned empty choices list")
-            return choices[0].message.content or ""
+            return result.get("content", "")
         except Exception as exc:
             last_exc = exc
             if attempt < max_retries:
@@ -498,6 +529,27 @@ def _annotate_paragraph(
                 )
 
     raise last_exc  # type: ignore[misc]
+
+
+def _chat_completion_worker(payload: Dict, queue) -> None:
+    """Run one chat completion in an isolated child process."""
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=payload["base_url"], api_key=payload["api_key"])
+        response = client.chat.completions.create(
+            model=payload["model"],
+            messages=payload["messages"],
+            max_tokens=payload.get("max_tokens", 4096),
+            temperature=payload.get("temperature", 0.3),
+            timeout=payload.get("timeout", 180),
+        )
+        choices = response.choices
+        if not choices:
+            queue.put({"ok": False, "error": "API returned empty choices list"})
+            return
+        queue.put({"ok": True, "content": choices[0].message.content or ""})
+    except Exception as exc:
+        queue.put({"ok": False, "error": repr(exc)})
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +699,7 @@ def annotate_lecture(
 
     failed_count = 0
 
-    for para in tqdm(paragraphs, desc="Annotating paragraphs", unit="para"):
+    for idx, para in enumerate(tqdm(paragraphs, desc="Annotating paragraphs", unit="para"), start=1):
         # Find frames in range
         frames = _frames_in_range(
             frames_index,
@@ -657,11 +709,24 @@ def annotate_lecture(
         )
         frame_map.append(frames)
 
+        logger.info(
+            "Paragraph %d/%d start: title=%r start=%s end=%s text_chars=%d frames=%d",
+            idx, len(paragraphs), para.get("title", f"段落 {idx}"),
+            _ts_readable(para["start"]), _ts_readable(para["end"]),
+            len(para.get("text", "")), len(frames),
+        )
+
         try:
+            t_para = time.time()
             annotation = _annotate_paragraph(
                 client, para, frames, model,
                 previous_annotations=annotations[-3:] if annotations else None,
                 allow_images=bool(frames),
+            )
+            logger.info(
+                "Paragraph %d/%d done in %.1fs: title=%r annotation_chars=%d",
+                idx, len(paragraphs), time.time() - t_para,
+                para.get("title", f"段落 {idx}"), len(annotation or ""),
             )
         except Exception as exc:
             logger.warning(
